@@ -9,7 +9,9 @@ import { initSentry } from './observability/sentry';
 
 async function bootstrap() {
   // Errors during boot are buffered until the pino logger takes over.
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
+  // rawBody: keep the exact request bytes so AdGem v3 postback signatures
+  // (HMAC of the raw JSON body) can be verified without re-serialization drift.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true, rawBody: true });
   const config = app.get(ConfigService);
 
   // Structured JSON logging with request correlation ids.
