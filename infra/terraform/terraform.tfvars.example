@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and fill in. Never commit real secrets — prefer
+# TF_VAR_* env vars or a secret backend for db_password / jwt_* in CI.
+project            = "your-gcp-project-id"
+region             = "us-central1"
+env                = "prod"
+api_image          = "us-central1-docker.pkg.dev/your-gcp-project-id/gemone/api:latest"
+web_image          = "us-central1-docker.pkg.dev/your-gcp-project-id/gemone/web:latest"
+db_tier            = "db-custom-1-3840"
+db_password        = "change-me"
+jwt_access_secret  = "change-me"
+jwt_refresh_secret = "change-me"

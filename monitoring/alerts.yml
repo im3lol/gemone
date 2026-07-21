@@ -1,0 +1,37 @@
+groups:
+  - name: gemone
+    rules:
+      # Payouts failing → refunds piling up; investigate the provider integration.
+      - alert: PayoutFailuresSpiking
+        expr: increase(gemone_payout_failures_total[15m]) > 5
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Payout failures spiking"
+          description: "More than 5 payouts failed in the last 15 minutes."
+
+      # The payout worker is falling behind or Redis is unhealthy.
+      - alert: PayoutQueueBacklog
+        expr: gemone_payout_queue_depth{state="waiting"} > 50
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Payout queue backlog"
+          description: "More than 50 payout jobs are waiting."
+
+      # A burst of chargebacks/reversals — possible fraud ring or provider issue.
+      - alert: ReversalsSpiking
+        expr: increase(gemone_reversals_total[1h]) > 20
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Reversals spiking"
+          description: "More than 20 reversals in the last hour."
+
+      - alert: ApiDown
+        expr: up{job="gemone-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "GemOne API is down"
+          description: "Prometheus cannot scrape the API."

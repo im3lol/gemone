@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String   @id @default(cuid())
+  email            String   @unique
+  passwordHash     String
+  displayName      String?
+  emailVerified    Boolean  @default(false)
+  isAdmin          Boolean  @default(false)
+  level            Int      @default(1)
+  xp               Int      @default(0)
+  refreshTokenHash String?
+  signupIp         String?
+  deviceHash       String? // client fingerprint captured at signup
+  country          String? // ISO-2, used to filter offers by geo
+  status           UserStatus @default(ACTIVE)
+  referralCode     String?  @unique // own share code; nullable so legacy rows don't block the migration
+  referredById     String? // who invited this user (null = organic)
+  lastBonusAt      DateTime? // last daily-bonus claim
+  bonusStreak      Int      @default(0) // consecutive days claimed
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  wallet      Wallet?
+  ledger      LedgerEntry[]
+  activities  Activity[]
+  withdrawals Withdrawal[]
+  fraudLogs   FraudLog[]
+
+  referredBy User?  @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals  User[] @relation("Referrals")
+
+  @@index([signupIp])
+  @@index([deviceHash])
+  @@index([referredById])
+}
+
+enum UserStatus {
+  ACTIVE
+  FLAGGED // suspicious — allowed to earn, withdrawals forced to manual review
+  SUSPENDED // blocked from withdrawing
+}
+
+model FraudLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // duplicate_ip | duplicate_device | vpn | velocity | reversal_abuse
+  severity  String // low | medium | high
+  detail    String
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+}
+
+model Wallet {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance   Int      @default(0) // available points
+  pending   Int      @default(0) // points awaiting confirmation
+  updatedAt DateTime @updatedAt
+}
+
+enum LedgerType {
+  BONUS
+  EARN
+  WITHDRAWAL
+  REVERSAL
+  ADJUSTMENT
+}
+
+model LedgerEntry {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  points    Int // signed: +credit / -debit
+  type      LedgerType
+  reference String?
+  createdAt DateTime   @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // survey | app_install | offer | bonus | video
+  title     String
+  points    Int
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// Audit + idempotency for provider postbacks. The unique key means a given
+// (provider, transactionId, type) is only ever processed once — same postback
+// replayed = no double credit. Only signature-valid postbacks are recorded;
+// rejected ones are logged, never inserted (so a forged tx can't block a real one).
+model PostbackEvent {
+  id            String   @id @default(cuid())
+  provider      String
+  transactionId String
+  type          String // credit | reversal
+  userId        String?
+  offerId       String?
+  title         String?
+  points        Int
+  createdAt     DateTime @default(now())
+
+  @@unique([provider, transactionId, type])
+  @@index([userId, createdAt])
+}
+
+enum WithdrawalStatus {
+  PENDING // awaiting manual review (first payout / large amount)
+  APPROVED // cleared review, queued for payout
+  PROCESSING // payout worker is calling the provider
+  PAID // provider confirmed
+  REJECTED // admin declined — points refunded
+  FAILED // provider failed permanently — points refunded
+}
+
+// Points are debited atomically when a withdrawal is created (not at payment
+// time). REJECTED/FAILED refund them once, guarded by `refundedAt`.
+model Withdrawal {
+  id            String           @id @default(cuid())
+  userId        String
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  points        Int
+  amountUsd     String
+  method        String // paypal | amazon | visa | googleplay
+  destination   String // payout email / account handle
+  status        WithdrawalStatus @default(PENDING)
+  providerRef   String? // provider payout id on success
+  failureReason String?
+  refundedAt    DateTime?
+  reviewedById  String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status])
+}

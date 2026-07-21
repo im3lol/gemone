@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gemone
+          POSTGRES_PASSWORD: gemone
+          POSTGRES_DB: gemone
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gemone" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://gemone:gemone@localhost:5432/gemone?schema=public
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      JWT_ACCESS_SECRET: ci-access
+      JWT_REFRESH_SECRET: ci-refresh
+      ADGEM_APP_ID: ci
+      ADGEM_POSTBACK_SECRET: ci-adgem
+      CPX_APP_ID: ci
+      CPX_POSTBACK_SECRET: ci-cpx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+
+      - run: pnpm install --frozen-lockfile=false
+      - run: pnpm --filter @offerwall/api exec prisma migrate deploy
+      - run: pnpm --filter @offerwall/api exec prisma db seed
+
+      - name: Lint + build
+        run: pnpm -r build
+
+      - name: Backend invariant checks
+        working-directory: apps/api
+        run: |
+          pnpm exec ts-node scripts/wallet-check.ts
+          pnpm exec ts-node scripts/payout-check.ts
+          pnpm exec ts-node scripts/fraud-check.ts
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build images (no push)
+        run: |
+          docker build -f apps/api/Dockerfile -t gemone-api:ci .
+          docker build -f apps/web/Dockerfile -t gemone-web:ci .

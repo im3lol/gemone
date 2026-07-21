@@ -1,0 +1,86 @@
+name: Deploy
+
+# Push to main → deploy to staging automatically, then to production after a
+# manual approval (configure the "production" environment's required reviewers
+# in GitHub repo settings — this is the phase-0 manual gate).
+on:
+  push:
+    branches: [main]
+
+env:
+  REGION: us-central1
+  AR_REPO: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/gemone
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push api + web
+        run: |
+          docker build -f apps/api/Dockerfile -t $AR_REPO/api:${{ github.sha }} .
+          docker build -f apps/web/Dockerfile -t $AR_REPO/web:${{ github.sha }} .
+          docker push $AR_REPO/api:${{ github.sha }}
+          docker push $AR_REPO/web:${{ github.sha }}
+
+  deploy-staging:
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      # Run migrations once (api image contains prisma + migrations).
+      - name: Migrate (staging)
+        run: |
+          gcloud run jobs deploy gemone-migrate-staging \
+            --image $AR_REPO/api:${{ github.sha }} --region $REGION \
+            --command sh --args "-c,pnpm exec prisma migrate deploy" \
+            --set-secrets DATABASE_URL=gemone-staging-db-url:latest --execute-now --wait
+      - name: Deploy api + worker + web (staging)
+        run: |
+          gcloud run deploy gemone-api-staging --image $AR_REPO/api:${{ github.sha }} \
+            --region $REGION --set-env-vars RUN_WORKERS=false --allow-unauthenticated
+          gcloud run deploy gemone-worker-staging --image $AR_REPO/api:${{ github.sha }} \
+            --region $REGION --set-env-vars RUN_WORKERS=true --command node --args dist/worker.js --no-cpu-throttling
+          gcloud run deploy gemone-web-staging --image $AR_REPO/web:${{ github.sha }} \
+            --region $REGION --allow-unauthenticated
+
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production # requires manual approval (repo → Environments → production)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Migrate (production)
+        run: |
+          gcloud run jobs deploy gemone-migrate-prod \
+            --image $AR_REPO/api:${{ github.sha }} --region $REGION \
+            --command sh --args "-c,pnpm exec prisma migrate deploy" \
+            --set-secrets DATABASE_URL=gemone-prod-db-url:latest --execute-now --wait
+      - name: Deploy api + worker + web (production)
+        run: |
+          gcloud run deploy gemone-api --image $AR_REPO/api:${{ github.sha }} \
+            --region $REGION --set-env-vars RUN_WORKERS=false --allow-unauthenticated
+          gcloud run deploy gemone-worker --image $AR_REPO/api:${{ github.sha }} \
+            --region $REGION --set-env-vars RUN_WORKERS=true --command node --args dist/worker.js --no-cpu-throttling
+          gcloud run deploy gemone-web --image $AR_REPO/web:${{ github.sha }} \
+            --region $REGION --allow-unauthenticated

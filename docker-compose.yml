@@ -1,0 +1,111 @@
+# Full stack: Postgres + Redis + NestJS API + Next.js web.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gemone-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gemone
+      POSTGRES_PASSWORD: gemone
+      POSTGRES_DB: gemone
+    # 5433 is contended by other local projects — gemone uses 5434 on the host.
+    ports:
+      - "5434:5432"
+    volumes:
+      - gemone_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gemone"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: gemone-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: gemone-api
+    restart: unless-stopped
+    # Secrets (JWT + provider) come from apps/api/.env; infra wiring is overridden below.
+    env_file:
+      - apps/api/.env
+    environment:
+      DATABASE_URL: postgresql://gemone:gemone@postgres:5432/gemone?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      PORT: "4000"
+      WEB_ORIGIN: http://localhost:3000
+      # API only enqueues; the dedicated worker processes payout jobs.
+      RUN_WORKERS: "false"
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: gemone-api
+    container_name: gemone-worker
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    env_file:
+      - apps/api/.env
+    environment:
+      DATABASE_URL: postgresql://gemone:gemone@postgres:5432/gemone?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      RUN_WORKERS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gemone-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: gemone-web
+    restart: unless-stopped
+    # Server-side fetches (RSC + server actions) reach the API over the compose network.
+    environment:
+      API_URL: http://api:4000
+      PORT: "3000"
+      # AdGem offerwall embed — set ADGEM_APP_ID to go live; empty shows the setup card.
+      ADGEM_APP_ID: ${ADGEM_APP_ID:-}
+      ADGEM_WALL_URL: ${ADGEM_WALL_URL:-https://api.adgem.com/v1/wall}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  gemone_pgdata:

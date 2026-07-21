@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GemOne — all offerwalls in one web app
 
-## Getting Started
+Monorepo (pnpm workspaces).
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+apps/
+  web/   Next.js 16 + React 19 + Tailwind v4  (landing, auth, user dashboard, admin)
+  api/   NestJS 11 + Prisma + Postgres         (@offerwall/api)
+design/  Reference designs (.dc.html) + screenshots
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Prerequisites
+Node ≥ 20, pnpm, Docker (for Postgres).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Run it (first time)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pnpm install
+docker compose up -d                                   # Postgres on :5433
 
-## Learn More
+cd apps/api
+cp .env.example .env                                   # already present for local dev
+pnpm exec prisma migrate dev                           # create schema
+pnpm exec ts-node prisma/seed.ts                       # seed demo user
+pnpm start:dev                                         # API on :4000
 
-To learn more about Next.js, take a look at the following resources:
+# in another terminal
+cd apps/web
+pnpm dev                                               # web on :3000
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Open http://localhost:3000.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+**Demo login:** `ashley@gemone.dev` / `password123` — or sign up a fresh account (gets a 50-point welcome bonus).
 
-## Deploy on Vercel
+## What works today (milestone 1: auth + dashboard)
+- Signup / login with **argon2** hashing + **JWT** access/refresh, stored in httpOnly cookies.
+- `/dashboard` is auth-gated (proxy + server-side check) and shows **real data** from Postgres:
+  balance, today's earnings, pending, completed offers, level/XP, recent activity.
+- Rate-limited auth endpoints (in-memory throttle).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Not built yet (next milestones — see IMPLEMENTATION_PLAN)
+Offerwall integration + postbacks, wallet/ledger reconciliation, withdrawals, fraud, admin data.
+The landing page's offer cards / daily-bonus / achievements and the whole `/admin` screen are still
+static mock UI.
