@@ -36,6 +36,15 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # `@gemone/contracts` resolves to its build output, which is generated
+      # rather than committed. A clean checkout has none, so every file in the
+      # API that imports a shared type fails to compile — `TS2307: Cannot find
+      # module '@gemone/contracts'` — while the same commit typechecks on a
+      # developer's machine, where the directory is left over from a previous
+      # build. Typecheck and lint both read those types, so this comes first.
+      - name: Build contracts
+        run: pnpm --filter @gemone/contracts build
+
       # Boundary rules (§4.4) fail here. They are mechanism one of three that
       # keep module boundaries from eroding.
       - name: Lint
@@ -111,11 +120,20 @@ jobs:
           DATABASE_URL: postgresql://gemone:gemone_test@localhost:5432/gemone_test
         run: pnpm db:deploy
 
+      # `JWT_SECRET` has no default and no test fallback: `setup.ts` fills in
+      # `CLICK_SIGNING_SECRET` and the mock provider's values, but a signing key
+      # that quietly defaults is the kind of default that reaches production, so
+      # the schema refuses to start without one. On a developer's machine
+      # `apps/api/.env` supplies it and every suite passes; on a clean runner
+      # nothing does, and all 28 files fail identically at environment
+      # validation. This value is a test fixture, not a secret — the same way
+      # the database URL above is.
       - name: Integration tests
         working-directory: apps/api
         env:
           DATABASE_URL: postgresql://gemone:gemone_test@localhost:5432/gemone_test
           REDIS_URL: redis://localhost:6379
+          JWT_SECRET: integration-test-jwt-secret-at-least-32-chars
         run: pnpm vitest run --project integration
 
   # Guards the deployment model itself — ARCHITECTURE.md §20.2.
