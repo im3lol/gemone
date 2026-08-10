@@ -1,0 +1,1235 @@
+// Prisma schema — DATABASE.md is the design authority for what goes here.
+//
+// Models arrive with the feature that owns them, so a table and the service
+// allowed to touch it land together (DATABASE.md §11).
+//
+// Conventions that apply to every model (DATABASE.md §5):
+//   - Tables are snake_case and plural, via @@map
+//   - Columns are snake_case, via @map
+//   - Timestamps are timezone-aware and stored in UTC
+//   - Points are integers; money is minor units + an ISO-4217 currency code
+//   - Primary keys are application-generated UUIDv7 (§6)
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  runtime      = "nodejs"
+  moduleFormat = "cjs"
+}
+
+// Note the absence of `url`. Prisma 7 removed it from the schema: migration
+// commands read the connection string from prisma.config.ts, and the runtime
+// client gets it through a driver adapter (see database.module.ts). The
+// connection string lives in exactly one place either way — the environment.
+datasource db {
+  provider = "postgresql"
+}
+
+// =========================================================================
+// Identity & access — owned by the `users` and `auth` modules
+// =========================================================================
+
+/// DATABASE.md §3.1: a single role enum, not a permissions table. Two roles
+/// do not need a permission system (P6). What each role is *permitted to
+/// configure* becomes configurable later; the set of roles does not.
+enum UserRole {
+  USER
+  ADMIN
+
+  @@map("user_role")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  CLOSED
+
+  @@map("user_status")
+}
+
+/// Owned by the `users` module.
+///
+/// Deliberately carries NO balance. A `points` column here would be the
+/// mutable-balance-in-the-wrong-place mistake that P2 exists to prevent;
+/// balance lives in `user_balances`, reachable only through
+/// RewardAccountingService (DATABASE.md §3.1).
+model User {
+  id           String     @id @db.Uuid
+  /// Stored already normalised (trimmed, lowercased) so the unique constraint
+  /// is effectively case-insensitive without a citext extension.
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  role         UserRole   @default(USER)
+  status       UserStatus @default(ACTIVE)
+
+  /// Reserved, unused. Email verification is out of scope for the MVP, but
+  /// the column costs nothing now and adding it later is a migration on a
+  /// table every session touches.
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(3)
+
+  /// Reserved for TOTP — ARCHITECTURE.md §8.4, point 2. Adding nullable
+  /// columns later is cheap; changing a login flow that clients depend on is
+  /// not. Nothing reads or writes these yet.
+  totpSecret    String?   @map("totp_secret")
+  totpEnabledAt DateTime? @map("totp_enabled_at") @db.Timestamptz(3)
+
+  /// Fraud signals captured at registration (DATABASE.md §3.1). Classified as
+  /// personal data with a retention limit, not redacted from logs (§16.4).
+  registrationIp      String? @map("registration_ip")
+  registrationCountry String? @map("registration_country") @db.Char(2)
+
+  locale String @default("en")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  refreshTokens      RefreshToken[]
+  verificationTokens VerificationToken[]
+  clicks             Click[]
+  conversions        Conversion[]
+  balance            UserBalance?
+  rewardTransactions RewardTransaction[]
+  payoutRequests     PayoutRequest[]
+  fraudEvaluations   FraudEvaluation[]
+
+  @@index([status])
+  @@map("users")
+}
+
+/// Owned by the `auth` module — revocable sessions with rotation and reuse
+/// detection (ARCHITECTURE.md §8.2).
+///
+/// No `updated_at`: every mutation this row can undergo has its own explicit
+/// timestamp (`used_at`, `revoked_at`), so a generic one would add a second,
+/// less informative record of the same events (DATABASE.md §8).
+model RefreshToken {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// Rotation produces a chain of tokens sharing one family. Reuse of any
+  /// spent token revokes the whole family in a single indexed update, with no
+  /// parent-pointer walk (DATABASE.md §3.1).
+  familyId String @map("family_id") @db.Uuid
+
+  /// SHA-256 of the token. The token itself is never stored, so a database
+  /// leak yields nothing usable (§8.1).
+  tokenHash String @unique @map("token_hash")
+
+  issuedAt      DateTime  @default(now()) @map("issued_at") @db.Timestamptz(3)
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt        DateTime? @map("used_at") @db.Timestamptz(3)
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(3)
+  revokedReason String?   @map("revoked_reason")
+
+  issuedIp        String? @map("issued_ip")
+  issuedUserAgent String? @map("issued_user_agent")
+
+  /// Restrict, not Cascade. Users are never deleted — they are anonymised
+  /// (DATABASE.md §7.3) — so a cascade would never fire, and "it never fires"
+  /// is not a reason to keep a loaded gun pointed at referencing rows (§7.4).
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// One table, two purposes (DATABASE.md §3.1). The lifecycle is identical —
+/// issue, deliver, consume once, expire — so two tables would be the same
+/// schema written twice (P6). Only `EMAIL_VERIFICATION` is issued today;
+/// `PASSWORD_RESET` is the second half of the same M1 line and is named here
+/// because the table is designed for it, not in anticipation of it.
+enum VerificationTokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+
+  @@map("verification_token_purpose")
+}
+
+/// Owned by the `auth` module — single-use, expiring tokens (ARCHITECTURE.md
+/// §8.3, DATABASE.md §3.1).
+///
+/// No `updated_at`, for the same reason `refresh_tokens` has none: the only
+/// mutation this row undergoes has its own explicit timestamp.
+model VerificationToken {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  purpose VerificationTokenPurpose
+
+  /// SHA-256 of the token, never the token. It travels in an email and lands
+  /// in server logs, proxy logs and browser history; what is stored has to be
+  /// useless to whoever reads those (§8.3).
+  tokenHash String @unique @map("token_hash")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+
+  /// Restrict, matching `refresh_tokens`: users are anonymised, never deleted
+  /// (DATABASE.md §7.3), so a cascade would never fire.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
+  @@map("verification_tokens")
+}
+
+// =========================================================================
+// Supply — owned by the `providers` module
+// =========================================================================
+
+/// Persisted rather than computed (DATABASE.md §3.2): it must survive a
+/// restart and be visible in the admin panel without re-deriving it from sync
+/// history on every page load.
+enum ProviderHealthState {
+  HEALTHY
+  DEGRADED
+  DOWN
+
+  @@map("provider_health_state")
+}
+
+/// The join point between a code adapter (ARCHITECTURE.md §7.3) and its
+/// runtime configuration — DATABASE.md §3.2.
+///
+/// Carries NO credentials. Those are environment (§5.1): a secret in a
+/// database row is a secret in every backup, every replica, and the blast
+/// radius of any SQL injection (DATABASE.md §1).
+///
+/// Carries NO business rule values either. Reward rate, revenue share and
+/// hold period are configuration scoped to this provider and live in
+/// `configuration_values`. Putting them here would create a second
+/// configuration mechanism and break P3's single audited path.
+model Provider {
+  id String @id @db.Uuid
+
+  /// Resolves to an adapter in the registry map. Unique because it is the
+  /// registry's lookup key — two rows claiming one adapter would make
+  /// resolution depend on row order.
+  slug        String @unique
+  displayName String @map("display_name")
+
+  /// The switch (§7.3). A disabled provider is not synced, its offers are
+  /// excluded from the wall, and its postback endpoint rejects.
+  ///
+  /// A column and not a `configuration_values` row, deliberately. §7.3 calls
+  /// disabling "configuration" in the sense of "changeable without a deploy",
+  /// which this is. Storing the bit anywhere but on the provider row would
+  /// let the row and the config value disagree about whether a provider
+  /// exists and is on — and §5.2 is explicit that the system has flags where
+  /// it needs them without a flag platform.
+  isEnabled Boolean @default(false) @map("is_enabled")
+
+  /// Published source ranges for postback verification — IPs or CIDR blocks.
+  /// Empty means "do not check the source", which is only defensible for a
+  /// provider whose scheme is cryptographic.
+  postbackIpRanges String[] @map("postback_ip_ranges")
+
+  /// Operational cadence, not economics: getting it wrong wastes API quota,
+  /// it does not change what anyone is paid. Stays on the row per
+  /// DATABASE.md §3.2 rather than becoming a configuration key.
+  syncIntervalMinutes Int @default(60) @map("sync_interval_minutes")
+
+  healthState             ProviderHealthState @default(HEALTHY) @map("health_state")
+  consecutiveFailureCount Int                 @default(0) @map("consecutive_failure_count")
+  lastSuccessfulSyncAt    DateTime?           @map("last_successful_sync_at") @db.Timestamptz(3)
+  /// Why the provider is in its current health state. Operational breadcrumb;
+  /// the full detail is in the logs, joined by correlation id.
+  lastFailureReason       String?             @map("last_failure_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  offers      Offer[]
+  syncRuns    OfferSyncRun[]
+  clicks      Click[]
+  postbacks   ProviderPostback[]
+  conversions Conversion[]
+
+  @@index([isEnabled])
+  @@map("providers")
+}
+
+// =========================================================================
+// Catalog — owned by the `offers` module
+// =========================================================================
+
+/// Our fixed set. Provider vocabularies are mapped onto it at sync time by
+/// `offers` — never by an adapter (ARCHITECTURE.md §7.5).
+enum OfferCategory {
+  GAME
+  SURVEY
+  SIGNUP
+  TRIAL
+  SHOPPING
+  APP_INSTALL
+  VIDEO
+  OTHER
+
+  @@map("offer_category")
+}
+
+/// Who switched an offer off. See the column comment for why a single boolean
+/// is not enough.
+enum OfferDeactivationSource {
+  SYNC
+  ADMIN
+
+  @@map("offer_deactivation_source")
+}
+
+enum SyncMode {
+  INCREMENTAL
+  FULL
+
+  @@map("sync_mode")
+}
+
+enum SyncOutcome {
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
+
+  @@map("sync_outcome")
+}
+
+/// One normalized offer from one provider, as of the last sync
+/// (DATABASE.md §3.2).
+///
+/// Deliberately NOT a historical record. Offers are overwritten by each sync;
+/// anything that must survive — what a user was shown and promised — is
+/// snapshotted onto the `click` when that lands.
+///
+/// Every column here is provider-agnostic. Nothing in this table could tell
+/// you which network a row came from except `provider_id`, which is the
+/// point (P1).
+model Offer {
+  id         String @id @db.Uuid
+  providerId String @map("provider_id") @db.Uuid
+
+  /// Unique within its provider. The other half of the upsert target that
+  /// makes a re-sync update rather than duplicate (DATABASE.md §9.1).
+  externalId String @map("external_id")
+
+  title        String
+  description  String?
+  /// What the user must actually do. The most common source of disputes.
+  requirements String?
+
+  /// What the provider pays us, in minor units (DATABASE.md §5). Integer,
+  /// never a float — floating-point money is how a cent goes missing.
+  payoutAmountMinor Int    @map("payout_amount_minor")
+  payoutCurrency    String @map("payout_currency") @db.Char(3)
+
+  /// What the user earns. Derived at sync time from the payout and the
+  /// provider's configured rate (P3), then STORED — so the wall, the click and
+  /// any dispute all read the same number. Recomputing it per render would let
+  /// a rate change silently restate what a user was already shown.
+  rewardPoints Int @map("reward_points")
+
+  category           OfferCategory
+  /// The provider's own category strings, kept for auditing the mapping.
+  /// Nothing branches on them.
+  providerCategories String[]      @map("provider_categories")
+
+  /// ISO-3166 alpha-2. Empty means no restriction the provider told us about.
+  countries String[]
+  devices   String[]
+
+  imageUrl            String? @map("image_url")
+  trackingUrlTemplate String  @map("tracking_url_template")
+  isMultiStep         Boolean @default(false) @map("is_multi_step")
+
+  /// Offers are NEVER hard-deleted (DATABASE.md §7.2). Clicks will reference
+  /// them, and a click whose offer row vanished is an unanswerable support
+  /// ticket.
+  isActive      Boolean   @default(true) @map("is_active")
+  deactivatedAt DateTime? @map("deactivated_at") @db.Timestamptz(3)
+
+  /// Why a single boolean is not enough: an offer an admin removed must not
+  /// reappear because the next sync still finds it in the provider's catalog.
+  /// Sync may only undo its own deactivations.
+  deactivationSource OfferDeactivationSource? @map("deactivation_source")
+
+  /// Set on every sync that sees this offer. A full sync deactivates whatever
+  /// it did not touch, which is expressed as `last_seen_at < run.started_at`.
+  lastSeenAt DateTime @map("last_seen_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  provider    Provider     @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  clicks      Click[]
+  conversions Conversion[]
+
+  /// Correctness index (DATABASE.md §9.1): sync upserts target exactly one row.
+  @@unique([providerId, externalId])
+  /// Every foreign key gets an index — the one blanket rule (§9.2). Also the
+  /// prune query: this provider's offers not seen by the current run.
+  @@index([providerId, lastSeenAt])
+  /// The admin catalog list filters on these.
+  @@index([providerId, isActive])
+  @@map("offers")
+}
+
+/// The history of catalog synchronization attempts (DATABASE.md §3.2).
+///
+/// "Why did this provider's offers disappear at 3 a.m.?" is a question that
+/// gets asked, and logs will have rotated by then — which is why this is a
+/// table and not a log stream.
+///
+/// The row is created BEFORE the work starts. A run that crashes mid-flight
+/// leaves a RUNNING row, which is the only way a job that died is visible at
+/// all (ARCHITECTURE.md §12.2, rule 5).
+model OfferSyncRun {
+  id         String @id @db.Uuid
+  providerId String @map("provider_id") @db.Uuid
+
+  mode    SyncMode
+  outcome SyncOutcome @default(RUNNING)
+
+  startedAt  DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt DateTime? @map("finished_at") @db.Timestamptz(3)
+
+  offersFetched     Int @default(0) @map("offers_fetched")
+  offersAccepted    Int @default(0) @map("offers_accepted")
+  offersRejected    Int @default(0) @map("offers_rejected")
+  offersCreated     Int @default(0) @map("offers_created")
+  offersUpdated     Int @default(0) @map("offers_updated")
+  offersDeactivated Int @default(0) @map("offers_deactivated")
+
+  /// Rejection reason → count. A number with no reason behind it is a number
+  /// nobody can act on.
+  rejections Json?
+
+  /// One line, safe to show an admin. Never a stack trace (§15.3).
+  errorSummary String? @map("error_summary")
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  /// "This provider's recent runs, newest first" — the admin health screen and
+  /// the full-sync-due check.
+  @@index([providerId, startedAt])
+  @@index([startedAt])
+  @@map("offer_sync_runs")
+}
+
+// =========================================================================
+// Engagement — owned by the `clicks` module
+// =========================================================================
+
+/// The attribution record — DATABASE.md §3.3.
+///
+/// A click is **the promise made to the user**, and the only thing that can
+/// later connect an incoming postback to an account.
+///
+/// Deliberately NOT responsible for conversion state. Conversions point at
+/// clicks, not the reverse: one click can produce several conversions on a
+/// multi-step offer, so a `converted` boolean here would be wrong the moment
+/// the second event arrived.
+///
+/// Immutable. There is no `updated_at` because there is no update — a promise
+/// that could be edited after the fact is not evidence of anything.
+model Click {
+  id String @id @db.Uuid
+
+  userId     String @map("user_id") @db.Uuid
+  offerId    String @map("offer_id") @db.Uuid
+  /// Denormalised from the offer so attribution survives the offer being
+  /// re-pointed, and so postback resolution needs one row rather than a join.
+  providerId String @map("provider_id") @db.Uuid
+
+  /// The signed, opaque identifier handed to the provider (§19.2).
+  ///
+  /// Unique because attribution must be unambiguous (DATABASE.md §9.1): two
+  /// clicks sharing a sub_id would make an incoming conversion creditable to
+  /// either, and there would be no way to tell which.
+  ///
+  /// It contains no user id, so it cannot be enumerated, and it carries its
+  /// own signature, so a forged one is rejected before any database work.
+  subId String @unique @map("sub_id")
+
+  /// What the user was actually shown, frozen here.
+  ///
+  /// Offers are overwritten by every sync (DATABASE.md §3.2), so without this
+  /// a dispute two weeks later cannot establish what was promised — and
+  /// promised-versus-paid is the most common support case on an offerwall.
+  /// Three denormalised fields remove an entire class of unanswerable
+  /// question.
+  offerTitleSnapshot   String @map("offer_title_snapshot")
+  rewardPointsSnapshot Int    @map("reward_points_snapshot")
+
+  /// Captured at click time (PROJECT.md §4.3). Fraud evidence and the input to
+  /// the geo-mismatch check when `fraud` lands. Nullable because a client can
+  /// legitimately withhold most of it.
+  ipAddress         String? @map("ip_address")
+  userAgent         String? @map("user_agent")
+  /// Client-computed and therefore untrusted — stored as evidence, never as a
+  /// basis for a decision at click time.
+  deviceFingerprint String? @map("device_fingerprint")
+  referrer          String?
+
+  /// Stored, not computed.
+  ///
+  /// Same reasoning as the hold period on a reward transaction
+  /// (ARCHITECTURE.md §9.4): an admin shortening the window must not
+  /// retroactively invalidate clicks users have already made. Resolving it at
+  /// read time would make that possible; resolving it once, here, makes it
+  /// structurally impossible.
+  attributionExpiresAt DateTime @map("attribution_expires_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  /// Restrict everywhere. Users are anonymised rather than deleted
+  /// (DATABASE.md §7.3), offers are deactivated rather than removed (§7.2),
+  /// and a click whose offer row vanished is an unanswerable support ticket.
+  user     User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  offer    Offer    @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  /// One click can produce several conversions — multi-step offers pay out in
+  /// stages (DATABASE.md §4). A `converted` boolean here would be wrong the
+  /// moment the second event arrived.
+  conversions Conversion[]
+
+  /// The per-user rate limit counts over this, and it is also "this user's
+  /// clicks, newest first" on the admin screen.
+  @@index([userId, createdAt])
+  /// The per-IP rate limit counts over this.
+  @@index([ipAddress, createdAt])
+  /// Foreign keys get an index — the one blanket rule (DATABASE.md §9.2).
+  @@index([offerId])
+  @@index([providerId])
+  @@map("clicks")
+}
+
+// =========================================================================
+// Conversion — owned by the `conversions` module
+// =========================================================================
+
+/// Processing state of one archived postback (DATABASE.md §3.4).
+///
+/// `RECEIVED` and `REJECTED` are written by the intake surface. The remaining
+/// three are the processing worker's vocabulary, declared now because adding
+/// an enum value later is a migration on the highest-volume table here.
+///
+/// **There is deliberately no `DUPLICATE`.** DATABASE.md §3.4 lists one, but
+/// the unique constraint below means a duplicate never becomes a row — there
+/// is nothing for the state to sit on. ARCHITECTURE.md §10.1's "mark
+/// duplicate" is `duplicate_count` on the row being duplicated.
+enum PostbackState {
+  RECEIVED
+  PROCESSED
+  QUARANTINED
+  REJECTED
+  FAILED
+
+  @@map("postback_state")
+}
+
+/// The immutable, verbatim archive of every postback we accepted, and — via
+/// one unique constraint — the system's idempotency guarantee
+/// (DATABASE.md §3.4).
+///
+/// **Never responsible for business meaning.** It is what arrived, not what it
+/// meant. Interpretation lives in `conversions`.
+///
+/// Rows are never deleted or edited. They are the replay source when
+/// processing has a bug, and the evidence in a provider dispute.
+///
+/// **What is NOT archived:** a request that failed the IP allowlist or the
+/// signature check. The endpoint is public and unauthenticated by necessity
+/// (§19.2), so archiving unauthenticated input would let anyone who can type
+/// fill this table. A row exists only once we know the provider sent it; the
+/// rejections are logged instead. That is also why there is no
+/// `signature_valid` column — it could only ever be true.
+model ProviderPostback {
+  id         String @id @db.Uuid
+  providerId String @map("provider_id") @db.Uuid
+
+  /// The provider's own transaction id — half of the idempotency key.
+  ///
+  /// Nullable for exactly one case: a payload that verified and would not
+  /// parse has no id to extract. In PostgreSQL two NULLs are never equal, so
+  /// those rows never collide with each other — which is correct, since an
+  /// unparseable postback has no idempotency key and duplicating evidence is
+  /// harmless. Every creditable row has one.
+  externalTransactionId String? @map("external_transaction_id")
+
+  /// Exactly what arrived: method, query, body. Unmodified.
+  ///
+  /// Stored before any processing (§10.1). If processing has a bug the
+  /// evidence still exists and the job can be replayed after the fix — a
+  /// postback rejected in memory is a conversion the user completed and can
+  /// never be paid for.
+  payload Json
+
+  /// A captured subset of the request headers. Never credential-bearing ones:
+  /// a secret in a database row is a secret in every backup and every replica
+  /// (DATABASE.md §1).
+  headers Json
+
+  /// The connecting address, already resolved through the trusted proxy.
+  sourceIp String? @map("source_ip")
+
+  state              PostbackState @default(RECEIVED)
+  processingAttempts Int           @default(0) @map("processing_attempts")
+  /// One line, safe to show an admin. Never a stack trace (§15.3).
+  errorDetail        String?       @map("error_detail")
+
+  /// How many times the provider re-sent this same event after the first.
+  ///
+  /// This is §10.1's "mark duplicate". It is also the only visibility anyone
+  /// has into a provider retry storm — a number that climbs while nothing
+  /// else changes says the acknowledgement is not reaching them.
+  duplicateCount  Int       @default(0) @map("duplicate_count")
+  lastDuplicateAt DateTime? @map("last_duplicate_at") @db.Timestamptz(3)
+
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz(3)
+
+  provider   Provider    @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  /// At most one. The unique key is on the conversion, so the link cannot
+  /// disagree with itself (see DECISIONS.md D30).
+  conversion Conversion?
+
+  /// **The single most important constraint in the database** (DATABASE.md
+  /// §3.4, §9.1).
+  ///
+  /// This is what makes duplicate postbacks impossible to double-credit. It
+  /// is a database constraint rather than an application check because a
+  /// check-then-insert loses the race it exists to prevent: two concurrent
+  /// retries both look, both find nothing, both insert.
+  @@unique([providerId, externalTransactionId])
+  /// "This provider's recent postbacks" — the admin explorer, and the input
+  /// to provider health once postback volume feeds it.
+  @@index([providerId, receivedAt])
+  /// The processing queue's backlog: everything not yet PROCESSED.
+  /// DATABASE.md §9.2 wants this partial; Prisma cannot express one, and the
+  /// composite is selective enough while RECEIVED is the minority (TODO T20).
+  @@index([state, receivedAt])
+  @@map("provider_postbacks")
+}
+
+/// The lifecycle of one conversion (DATABASE.md §3.4).
+///
+/// What the provider says about the event and what we have done about it share
+/// one column, because only one of them is ever the *current* answer — a
+/// conversion the provider has not finalised cannot also be credited — and a
+/// second status column is a second thing that can disagree with the first.
+/// What the provider actually reported is kept verbatim in `provider_status`.
+enum ConversionStatus {
+  /// The provider has not finalised the event. Nothing may be credited.
+  PENDING
+  /// Matched, priced, recorded — no balance effect applied.
+  ATTRIBUTED
+  /// Points credited. Written by the reward flow (ARCHITECTURE.md §9.3).
+  CREDITED
+  /// Recognised but withheld pending a human decision.
+  HELD
+  /// A later chargeback took it back. The row stays.
+  REVERSED
+  /// The provider itself rejected the event.
+  REJECTED
+
+  @@map("conversion_status")
+}
+
+enum ConversionType {
+  CONVERSION
+  /// A chargeback pointing at the conversion it takes back.
+  REVERSAL
+
+  @@map("conversion_type")
+}
+
+/// The interpreted, attributed result of a postback — DATABASE.md §3.4.
+///
+/// **Never responsible for the balance effect.** Crediting is a
+/// `reward_transactions` row created by `RewardAccountingService`; this records
+/// *that a thing happened*, not *what the balance became* (P2).
+///
+/// Reversals are rows, not edits. A chargeback creates a new row of `REVERSAL`
+/// type pointing at the original and marks the original `REVERSED`. Editing the
+/// original away would destroy the record that the user did complete the offer,
+/// which is what matters when disputing the reversal with the provider.
+model Conversion {
+  id String @id @db.Uuid
+
+  /// The attribution. A conversion exists because a click did — there is no
+  /// other way to know whose it is.
+  clickId String @map("click_id") @db.Uuid
+
+  /// Denormalised from the click so that "this user's conversions" and "this
+  /// provider's conversions" are one indexed read rather than a join through
+  /// `clicks` on the two highest-volume tables in the system.
+  userId     String @map("user_id") @db.Uuid
+  providerId String @map("provider_id") @db.Uuid
+  offerId    String @map("offer_id") @db.Uuid
+
+  /// **The conversion-level idempotency guarantee.**
+  ///
+  /// Unique: one archived postback produces at most one conversion
+  /// (DATABASE.md §4, `provider_postbacks` → `conversions` is 1 ─ 0..1). The
+  /// postback table already refuses a duplicate *delivery*; this refuses a
+  /// duplicate *processing* of one delivery, which is a different race — two
+  /// workers picking up the same job both find the row unprocessed, and only
+  /// the constraint decides which of them wins.
+  postbackId String @unique @map("postback_id") @db.Uuid
+
+  type   ConversionType   @default(CONVERSION)
+  status ConversionStatus
+
+  // --- What the provider reported, kept verbatim -------------------------
+
+  externalTransactionId String @map("external_transaction_id")
+
+  /// The provider's own campaign reference, when it sent one.
+  ///
+  /// Deliberately **not** enforced against the click's offer. A mismatch is a
+  /// fraud signal for later, not a processing failure — and refusing on it
+  /// would drop legitimate multi-step events that report a sub-campaign id.
+  externalOfferId String? @map("external_offer_id")
+
+  /// What the provider pays us, in minor units (DATABASE.md §5). Integer,
+  /// never a float.
+  payoutAmountMinor Int    @map("payout_amount_minor")
+  payoutCurrency    String @map("payout_currency") @db.Char(3)
+
+  /// `confirmed` / `pending` / `rejected`, as normalized by the adapter.
+  ///
+  /// Text and not a database enum: it is the *adapter contract's* vocabulary,
+  /// not ours, and the two must be free to differ. Stored because `status`
+  /// above is derived from it, and a derived value with no record of its input
+  /// is a value nobody can explain later.
+  providerStatus String @map("provider_status")
+
+  /// When the provider says it happened. Null when the payload omitted it —
+  /// which is why it is not the same column as `created_at`.
+  occurredAt DateTime? @map("occurred_at") @db.Timestamptz(3)
+
+  // --- What we computed, and the rule in force when we computed it -------
+
+  /// Computed from the payout actually reported, not from the offer's
+  /// advertised reward. The two legitimately differ on a multi-step offer, and
+  /// the click's snapshot holds the promise for comparison.
+  rewardPoints Int @map("reward_points")
+
+  /// The rate used, stored on the row.
+  ///
+  /// Rates change (P3). Without them a conversion's point value cannot be
+  /// explained later, and "why did I get fewer points than my friend for the
+  /// same offer?" becomes unanswerable. **The rule in force at the moment of
+  /// the event is part of the event** — the same reasoning as the click
+  /// snapshot and the stored hold period.
+  pointsPerMinorUnit Int @map("points_per_minor_unit")
+  rewardSharePercent Int @map("reward_share_percent")
+
+  // --- Outcome -----------------------------------------------------------
+
+  /// Self-referencing, for chargebacks (DATABASE.md §3.4).
+  reversalOfId String? @map("reversal_of_id") @db.Uuid
+
+  /// Why it is held or rejected, when it is. One line, safe to show an admin.
+  reviewReason String? @map("review_reason")
+
+  /// The scoring decision behind this row (DATABASE.md §3.4).
+  ///
+  /// The link is stored here and only here, though §3.6 describes it from the
+  /// evaluation's side too: it is one 1:1 edge, and a second column holding
+  /// the same edge is a second thing that can be wrong (D47). Nullable because
+  /// scoring is skipped for events that were never creditable — a
+  /// provider-rejected conversion earns nothing whatever the score.
+  fraudEvaluationId String? @unique @map("fraud_evaluation_id") @db.Uuid
+
+  /// Who resolved the hold, and when. Null until somebody does.
+  reviewedByAdminId String?   @map("reviewed_by_admin_id") @db.Uuid
+  reviewedAt        DateTime? @map("reviewed_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  /// Restrict everywhere, as with clicks: users are anonymised rather than
+  /// deleted (DATABASE.md §7.3) and offers are deactivated rather than removed.
+  click    Click            @relation(fields: [clickId], references: [id], onDelete: Restrict)
+  user     User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  provider Provider         @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  offer    Offer            @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  postback ProviderPostback @relation(fields: [postbackId], references: [id], onDelete: Restrict)
+
+  reversalOf Conversion?  @relation("ConversionReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals  Conversion[] @relation("ConversionReversal")
+
+  /// Restrict, like everything else here. The evidence behind a hold must
+  /// outlive any tidying of the evaluation table.
+  fraudEvaluation FraudEvaluation? @relation(fields: [fraudEvaluationId], references: [id], onDelete: Restrict)
+
+  /// "This user's conversions, newest first" — the account screen and every
+  /// investigation that starts from a user.
+  @@index([userId, createdAt])
+  /// The review queue: everything HELD or PENDING, oldest first.
+  @@index([status, createdAt])
+  /// Foreign keys get an index — the one blanket rule (DATABASE.md §9.2).
+  @@index([clickId])
+  @@index([providerId, createdAt])
+  @@index([offerId])
+  @@index([reversalOfId])
+  @@map("conversions")
+}
+
+// =========================================================================
+// Money — owned by the `rewards` module (P2)
+// =========================================================================
+//
+// ONLY `RewardAccountingService` reads or writes the two models below. Not the
+// admin panel, not reporting, not a convenience join in another module
+// (DATABASE.md §3.5). `arch.spec.ts` enforces it — ARCHITECTURE.md §4.4 calls
+// that "the single most important rule in the codebase", which is why it gets
+// its own test rather than sharing a lint config.
+
+/// The closed set of things that can move points (PROJECT.md §4.5).
+///
+/// `REWARD_MATURATION` is the one addition to the seven that section lists.
+/// Without it the pending-to-available move is the only balance change with no
+/// transaction behind it, and reconciliation — the mechanism R4 and R5 both
+/// depend on — stops being a sum over history. See DECISIONS.md D38.
+enum RewardTransactionType {
+  CONVERSION_CREDIT
+  CHARGEBACK_DEBIT
+  REWARD_MATURATION
+  PAYOUT_LOCK
+  PAYOUT_SETTLE
+  PAYOUT_REFUND
+  MANUAL_ADJUSTMENT
+  BONUS
+
+  @@map("reward_transaction_type")
+}
+
+/// Discriminated actor, not a nullable user id (DATABASE.md §8): most balance
+/// movements are made by the system, and a null id cannot distinguish "the
+/// system did it" from "we forgot to record who did it".
+enum RewardActorType {
+  USER
+  SYSTEM
+  ADMIN
+
+  @@map("reward_actor_type")
+}
+
+/// The authoritative current balance, in three buckets — DATABASE.md §3.5.
+///
+/// **Never responsible for history.** It holds current state only; every
+/// movement that produced it is a `reward_transactions` row.
+///
+/// **Why one row per user and not a computed sum.** This is the deliberate P2
+/// trade-off recorded in PROJECT.md R4: a mutable row is contended, which is
+/// why every mutation takes a row lock (`SELECT ... FOR UPDATE`, §9.5). The
+/// append-only alternative remains available behind the service interface, and
+/// `reward_transactions` is already exactly what it would replay.
+///
+/// The row is created **with the user** (DATABASE.md §10.1), not lazily on
+/// first credit. A missing balance row during a credit is an error path nobody
+/// tests; an always-present zero row is one less branch.
+model UserBalance {
+  id     String @id @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+
+  /// Credited but inside the hold period. Becomes available when it elapses.
+  pendingPoints   Int @default(0) @map("pending_points")
+  /// Withdrawable now.
+  availablePoints Int @default(0) @map("available_points")
+  /// Reserved by an in-flight payout. Consumed on settle, returned on rejection.
+  lockedPoints    Int @default(0) @map("locked_points")
+
+  /// Running totals, for the account screen and for reconciliation's sanity.
+  /// Derivable from history, kept here because every profile render needs them
+  /// and none of them should cost an aggregate over a growing table.
+  lifetimeEarnedPoints    Int @default(0) @map("lifetime_earned_points")
+  lifetimeWithdrawnPoints Int @default(0) @map("lifetime_withdrawn_points")
+  lifetimeReversedPoints  Int @default(0) @map("lifetime_reversed_points")
+
+  /// Incremented on every mutation. Diagnostics only — the row lock is what
+  /// provides correctness (§9.5), not this counter. It exists so "how many
+  /// times has this balance moved" is answerable without scanning history.
+  version Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@map("user_balances")
+}
+
+/// The complete history of every balance mutation — DATABASE.md §3.5.
+///
+/// **Append-only. Rows are never updated or deleted.** There is deliberately no
+/// `updated_at`: on an append-only table it is a lie that invites someone to
+/// write to it (§8). Nothing here is ever marked, flagged or settled in place —
+/// an event that acts on an earlier one is a *new row* pointing at it.
+///
+/// **Never responsible for being authoritative.** Under the simple balance
+/// model `user_balances` is the source of truth and this is the audit trail.
+/// That relationship inverts if P2's ledger migration is ever exercised —
+/// which is precisely why the table is populated from day one (PROJECT.md R5).
+model RewardTransaction {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  type RewardTransactionType
+
+  /// Signed, from the user's point of view: +171 for a credit, -171 for a
+  /// chargeback, 0 for a maturation — which moves points between buckets
+  /// without anyone earning or losing anything.
+  amountPoints Int @map("amount_points")
+
+  /// The per-bucket effect.
+  ///
+  /// Their sums over a user's history **are** that user's balance. Not an
+  /// incidental property — it is the reconciliation invariant (R4), it is what
+  /// a ledger implementation replays, and it is the reason bucket movement is
+  /// recorded as three signed numbers rather than as a description.
+  pendingDelta   Int @map("pending_delta")
+  availableDelta Int @map("available_delta")
+  lockedDelta    Int @map("locked_delta")
+
+  /// Polymorphic and therefore carrying no foreign key: a movement can be
+  /// caused by a conversion, a payout, or an admin (DATABASE.md §3.5).
+  sourceType String  @map("source_type")
+  sourceId   String? @map("source_id")
+
+  /// The transaction this one acts upon — the credit a maturation matures, the
+  /// credit a chargeback takes back, the lock a settle consumes.
+  ///
+  /// This self-reference is what keeps the table append-only: "has this credit
+  /// matured?" is answered by the existence of a child row, never by a flag on
+  /// the parent.
+  sourceTransactionId String? @map("source_transaction_id") @db.Uuid
+
+  actorType RewardActorType @map("actor_type")
+  actorId   String?         @map("actor_id")
+  reason    String?
+
+  /// When these points become withdrawable — resolved at credit time and
+  /// STORED (ARCHITECTURE.md §9.4).
+  ///
+  /// The maturation job reads this and never re-resolves configuration, which
+  /// is what structurally guarantees "hold period changes apply to newly
+  /// credited conversions only". An admin shortening the period cannot
+  /// retroactively re-hold points a user was already told are available.
+  ///
+  /// **Null on a credit means held indefinitely** — it matures when a human
+  /// says so, not when a clock does.
+  maturesAt      DateTime? @map("matures_at") @db.Timestamptz(3)
+  /// The resolved period, so the maturity date can be explained, not just read.
+  holdPeriodDays Int?      @map("hold_period_days")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  actsOn    RewardTransaction?  @relation("RewardTransactionSource", fields: [sourceTransactionId], references: [id], onDelete: Restrict)
+  actedOnBy RewardTransaction[] @relation("RewardTransactionSource")
+
+  /// The user's statement, newest first — and reconciliation's scan.
+  @@index([userId, createdAt])
+  /// "Has this credit already matured, or been charged back?" — asked once per
+  /// candidate by the maturation job, so it must not be a sequential scan.
+  @@index([sourceTransactionId, type])
+  /// The maturation sweep: credits whose hold has elapsed.
+  @@index([type, maturesAt])
+  /// "Which movement did this conversion cause?" — the reversal path's lookup.
+  @@index([sourceType, sourceId])
+  @@map("reward_transactions")
+}
+
+/// The withdrawal lifecycle — ARCHITECTURE.md §11.1.
+///
+/// Transitions are explicit and total: every state names its permitted next
+/// states and anything else is refused. `PAID` and `REJECTED` are terminal —
+/// and so is `FAILED`, whose lock has already been released, which makes any
+/// continuation a new request rather than this one resuming (DECISIONS.md D41).
+enum PayoutStatus {
+  PENDING_REVIEW
+  APPROVED
+  PAID
+  REJECTED
+  FAILED
+
+  @@map("payout_status")
+}
+
+/// One withdrawal request and its state machine — DATABASE.md §3.5.
+///
+/// **Never responsible for the money itself.** Every point this row reserves,
+/// consumes or returns moves through `RewardAccountingService` (P2); the
+/// reference below points at the lock, and the settle or refund that resolves
+/// it is another row in that history.
+///
+/// **Status history is deliberately not a table.** The current status lives
+/// here; who changed it and why lives in `admin_audit_log`, and the money
+/// movements live in `reward_transactions`. A third record of the same events
+/// would be a third thing to keep in step (§3.5, P6).
+model PayoutRequest {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  status PayoutStatus @default(PENDING_REVIEW)
+
+  /// What the user asked for, and what it was worth when they asked.
+  amountPoints    Int    @map("amount_points")
+  cashAmountMinor Int    @map("cash_amount_minor")
+  cashCurrency    String @map("cash_currency") @db.Char(3)
+
+  /// The rate used, stored on the row.
+  ///
+  /// This answers DATABASE.md §13's first open question, which left it "leaning
+  /// toward storing the rate used on the payout request, decided when the
+  /// withdrawal screen is built". It is built, and the reasoning is the same as
+  /// for the reward rate on a conversion: without the rate, a payout's cash
+  /// value cannot be explained once configuration moves (DECISIONS.md D42).
+  pointsPerCurrencyUnit Int @map("points_per_currency_unit")
+
+  /// Configuration, not an enum (PROJECT.md §4.6): adding a payment method an
+  /// admin can settle by hand must not require a deployment.
+  method String
+
+  /// **Sensitive.** Never logged (§16.4), never returned in a list response,
+  /// and returned on the detail view only — a view that writes an audit entry
+  /// for having been opened (DATABASE.md §3.5).
+  ///
+  /// Stored because an admin has to read it to send the money. That is the
+  /// entire manual payout model.
+  destination String
+
+  /// The `PAYOUT_LOCK` reward transaction this request reserved its points
+  /// with. Settling consumes it; rejecting and failing return it.
+  ///
+  /// Not a foreign key: `reward_transactions` belongs to another module and
+  /// only `RewardAccountingService` may resolve it (P2). A database-level
+  /// reference would be a join this module is not allowed to make.
+  lockTransactionId String @map("lock_transaction_id") @db.Uuid
+
+  reviewedByAdminId String?   @map("reviewed_by_admin_id") @db.Uuid
+  reviewedAt        DateTime? @map("reviewed_at") @db.Timestamptz(3)
+  /// Mandatory on rejection and failure; the user is entitled to know why.
+  reviewReason      String?   @map("review_reason")
+
+  /// The bank reference, transaction hash, or whatever the admin recorded.
+  /// "Paid" with nothing to point at is a claim, not a record.
+  externalReference String?   @map("external_reference")
+  settledAt         DateTime? @map("settled_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// The admin queue: pending requests, oldest first (DATABASE.md §9.2).
+  @@index([status, createdAt])
+  /// "This user's withdrawals" — their own history, and the daily-cap count.
+  @@index([userId, createdAt])
+  @@map("payout_requests")
+}
+
+// =========================================================================
+// Risk — owned by the `fraud` module
+// =========================================================================
+
+/// What the engine recommended. Ordered by severity (PROJECT.md §4.7).
+enum FraudAction {
+  ALLOW
+  HOLD
+  REVIEW
+  BLOCK
+
+  @@map("fraud_action")
+}
+
+/// The recorded outcome of scoring one conversion (DATABASE.md §3.6).
+///
+/// **Why this is persisted at all**, given the engine is a pure function
+/// (ARCHITECTURE.md §4.2): the function is pure, its *output* is a business
+/// record. An admin clearing a hold needs to see what triggered it.
+model FraudEvaluation {
+  id String @id @db.Uuid
+
+  /// Stored directly, not reached through the conversion.
+  ///
+  /// An evaluation exists whether or not a conversion row followed it, and
+  /// "everything ever scored for this user" is the query the payout review
+  /// screen runs (§11.3). Going through `conversions` would lose exactly the
+  /// evaluations worth seeing.
+  userId String @map("user_id") @db.Uuid
+
+  score  Int
+  /// What the engine recommended.
+  action FraudAction
+
+  /// What the caller actually did (DATABASE.md §3.6).
+  ///
+  /// Separate from `action` because they can legitimately differ: a
+  /// provider-pending conversion credits nothing whatever the score, so a HOLD
+  /// recommendation lands as ALLOW. Recording only the recommendation would
+  /// make a held-looking evaluation whose points moved anyway inexplicable.
+  appliedAction FraudAction @map("applied_action")
+
+  /// The rules that fired, with the numbers behind each.
+  triggered Json
+
+  /// **A snapshot of the thresholds in force** (DATABASE.md §3.6).
+  ///
+  /// Thresholds are tuned continuously (P3). Without this, a held conversion
+  /// from last month cannot be explained — re-reading current configuration
+  /// answers a different question than the one an admin is asking.
+  ruleSnapshot Json @map("rule_snapshot")
+
+  /// Rules that could not run for want of input — a click with no IP, a user
+  /// with no email. "Nothing fired" and "it never ran" are different facts.
+  skipped Json
+
+  evaluatedAt DateTime @default(now()) @map("evaluated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// The back half of the 1:1 the conversion owns. No column here — see D47.
+  conversion Conversion?
+
+  /// "Everything scored for this user, newest first" — the payout review
+  /// screen and every investigation that starts from an account.
+  @@index([userId, evaluatedAt])
+  /// Finding the flagged ones without scanning the allowed majority.
+  @@index([action, evaluatedAt])
+  @@map("fraud_evaluations")
+}
+
+// =========================================================================
+// Administration — owned by the `admin` module
+// =========================================================================
+
+/// Every action an admin takes, immutably (DATABASE.md §3.7).
+///
+/// Written inside the same transaction as the action it records. An audit
+/// entry written afterwards can be lost precisely when it matters most —
+/// when the action succeeded and something then failed.
+///
+/// `action` is text, not a database enum, deliberately: the set of admin
+/// actions grows with every feature, and a Postgres enum would make each
+/// addition a migration. The values come from a TypeScript const object, so
+/// the compiler still rejects typos at the call site (DATABASE.md §5).
+model AdminAuditLog {
+  id      String @id @db.Uuid
+  adminId String @map("admin_id") @db.Uuid
+
+  action     String
+  targetType String  @map("target_type")
+  targetId   String? @map("target_id")
+
+  /// State before and after, as recorded by the action. Nullable because not
+  /// every action mutates something with a prior state.
+  before Json?
+  after  Json?
+
+  /// Mandatory for actions that change a user's standing or move money.
+  /// Enforced by the service, not by the column, because some actions
+  /// legitimately have none.
+  reason String?
+
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([adminId, createdAt])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("admin_audit_log")
+}
+
+// =========================================================================
+// Configuration — owned by core/config (P3)
+// =========================================================================
+
+/// Resolution runs most-specific first: PROVIDER, then GLOBAL
+/// (ARCHITECTURE.md §4.9, DATABASE.md §3.7).
+enum ConfigScopeType {
+  GLOBAL
+  PROVIDER
+
+  @@map("config_scope_type")
+}
+
+/// Every business rule value (P3), scoped and typed.
+///
+/// A generic key-value table rather than a typed column per rule: P3's whole
+/// point is that rules change without a deployment, and a typed table would
+/// need a migration for each new one. The cost — validation lives in code
+/// rather than in column types — is paid by validating on write against a
+/// registered key definition (DATABASE.md §3.7).
+model ConfigurationValue {
+  id String @id @db.Uuid
+
+  key       String
+  scopeType ConfigScopeType @map("scope_type")
+
+  /// The provider id for PROVIDER scope; the empty string for GLOBAL.
+  ///
+  /// NOT NULL with a sentinel, deliberately. In PostgreSQL two NULLs are
+  /// never equal, so `UNIQUE (key, scope_type, scope_id)` with a nullable
+  /// scope_id would permit unlimited duplicate GLOBAL rows for one key — and
+  /// resolution would then depend on row order. The constraint that makes the
+  /// chain unambiguous (DATABASE.md §9.1) only holds if this column cannot be
+  /// null.
+  scopeId String @default("") @map("scope_id")
+
+  /// Stored as JSON so one column holds numbers, booleans, strings and
+  /// durations without a type-per-column table.
+  value Json
+
+  /// Declared type, checked against the key's registered definition on write.
+  valueType String @map("value_type")
+
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  /// The constraint that makes the resolution chain unambiguous — without it
+  /// two rows could claim the same scope and resolution would depend on row
+  /// order (DATABASE.md §9.1).
+  @@unique([key, scopeType, scopeId])
+  @@index([key])
+  @@map("configuration_values")
+}
+
+/// Append-only record of every configuration change (DATABASE.md §3.7).
+///
+/// Separate from `admin_audit_log` because it is queried differently — "show
+/// me this key's history" is a per-key timeline — and because it must also
+/// capture changes made by migrations and seed scripts, which have no admin
+/// actor.
+model ConfigurationHistory {
+  id String @id @db.Uuid
+
+  key       String
+  scopeType ConfigScopeType @map("scope_type")
+  /// Matches ConfigurationValue: empty string for GLOBAL, never null.
+  scopeId   String          @default("") @map("scope_id")
+
+  oldValue Json? @map("old_value")
+  newValue Json? @map("new_value")
+
+  /// Discriminated actor, not a nullable user id (DATABASE.md §8): most
+  /// configuration changes are made by the system, and a null user id cannot
+  /// distinguish "the system did it" from "we forgot to record who did it".
+  actorType String  @map("actor_type")
+  actorId   String? @map("actor_id")
+
+  reason String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([key, createdAt])
+  @@map("configuration_history")
+}

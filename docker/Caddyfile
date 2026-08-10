@@ -1,0 +1,73 @@
+# Edge routing — ARCHITECTURE.md §19.1.
+#
+# Caddy is Zone 1: TLS, security headers, and routing. It automatically
+# obtains and renews certificates, which is why it was chosen over nginx +
+# certbot (§1.3).
+#
+# Two routes with deliberately different destinations:
+#   /postback/*  →  api directly, bypassing `web` entirely (§6.1). These are
+#                   called by provider servers, not browsers; there is no
+#                   session and nothing to render.
+#   everything   →  web (SvelteKit SSR + BFF), which holds the session cookie
+#                   and forwards to the API internally.
+
+# The trust boundary for client identity — ARCHITECTURE.md §19.1, §19.5.
+#
+# Caddy is the only thing here that *knows* who the client is: it holds the
+# connection, so `{remote_host}` is a fact rather than a claim. Everything
+# behind it — the click limit, the fraud rules keyed on an address, the login
+# and public-endpoint throttles, the admin audit trail — reads that claim
+# second-hand, and is only as trustworthy as this block.
+#
+# `>X-Forwarded-For` **replaces** the header rather than appending to it, which
+# is Caddy's default. Appending is not wrong on its own — a downstream reader
+# that counts hops correctly still lands on the real address — but it leaves
+# the true value's *position* dependent on how many entries a caller chose to
+# send, and every reader has to agree on the counting. Replacing removes the
+# question: what arrives is one address, and it is the one Caddy observed.
+#
+# `X-Real-IP` and `Forwarded` are deleted rather than rewritten. Nothing behind
+# this reads them today — Express reads only `X-Forwarded-For`, and so does
+# `adapter-node` — so forwarding a caller's own would be handing an
+# attacker-controlled value to whatever reads one next.
+(client_address) {
+	header_up >X-Forwarded-For {remote_host}
+	header_up -X-Real-IP
+	header_up -Forwarded
+}
+
+{$SITE_ADDRESS:localhost} {
+	encode gzip zstd
+
+	# Do not advertise the stack.
+	header -Server
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	# Provider postbacks — public and unauthenticated by necessity, defended
+	# by IP allowlist and signature verification inside the API (§19.2).
+	handle /postback/* {
+		reverse_proxy api:3000 {
+			import client_address
+		}
+	}
+
+	# Health endpoints, reachable for the uptime monitor.
+	handle /health* {
+		reverse_proxy api:3000 {
+			import client_address
+		}
+	}
+
+	# Everything else is the web application.
+	handle {
+		reverse_proxy web:3000 {
+			import client_address
+		}
+	}
+}

@@ -1,0 +1,23 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Native binaries that must run their install scripts.
+#
+# @swc/core transforms decorator metadata for Vitest and esbuild is Vite's
+# bundler — both build-time only. Prisma's postinstall fetches its query
+# engine binary and generates the client, which the application needs at
+# runtime, so it is not optional.
+allowBuilds:
+  '@prisma/engines': true
+  '@swc/core': true
+  esbuild: true
+  prisma: true
+  unrs-resolver: true
+
+  # An optional native accelerator for msgpackr, which BullMQ uses to serialize
+  # job payloads. Declined: ours carry a handful of identifiers (§13.2 forbids
+  # entity snapshots), so the pure-JS path is not a measurable cost — and a
+  # native build is one more thing that can fail on a machine or in CI for a
+  # speedup nothing here would notice (P4, P6).
+  msgpackr-extract: false

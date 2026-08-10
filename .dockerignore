@@ -1,0 +1,23 @@
+# Without this, `COPY . .` copies the host's node_modules, whose symlinks point
+# at a pnpm store that does not exist in the image. pnpm then decides the
+# modules directory must be purged and aborts with
+# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY — so no image builds at all.
+node_modules
+**/node_modules
+
+# Build output. The image builds its own.
+dist
+build
+.svelte-kit
+apps/api/src/generated
+
+# Never ship secrets into a layer.
+.env
+.env.*
+!.env.example
+
+.git
+.github
+docs
+coverage
+*.log

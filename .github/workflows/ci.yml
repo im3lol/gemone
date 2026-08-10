@@ -1,0 +1,245 @@
+# CI — ARCHITECTURE.md §18.6.
+#
+# Ordered to fail fast and cheap: lint and boundary rules first, then types,
+# then unit tests, then integration against real containers, then build.
+# Nothing merges on a red pipeline, including for "obviously safe" changes —
+# the exception that gets made once becomes the norm.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  verify:
+    name: Lint, typecheck, unit tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Boundary rules (§4.4) fail here. They are mechanism one of three that
+      # keep module boundaries from eroding.
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: Build
+        run: pnpm build
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    # A real Postgres and a real Redis, not substitutes. The parts most likely
+    # to be wrong are the parts where code meets the database — transaction
+    # boundaries, row locking, unique constraints, idempotency — and none of
+    # those can be tested with a mock (§18.3).
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: gemone
+          POSTGRES_PASSWORD: gemone_test
+          POSTGRES_DB: gemone_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gemone -d gemone_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build contracts
+        run: pnpm --filter @gemone/contracts build
+
+      - name: Generate Prisma client
+        working-directory: apps/api
+        run: pnpm db:generate
+
+      # `migrate deploy`, not `migrate dev`: deploy applies existing migrations
+      # and never generates new ones. A CI run that can author a migration is
+      # a CI run that can hide a schema change nobody reviewed.
+      - name: Apply migrations
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql://gemone:gemone_test@localhost:5432/gemone_test
+        run: pnpm db:deploy
+
+      - name: Integration tests
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql://gemone:gemone_test@localhost:5432/gemone_test
+          REDIS_URL: redis://localhost:6379
+        run: pnpm vitest run --project integration
+
+  # Guards the deployment model itself — ARCHITECTURE.md §20.2.
+  #
+  # Runs on every pull request, not only on main, because the failure it catches
+  # is a change to the production compose file rather than a change to the
+  # application: a `build:` reappearing there means production compiles on the
+  # server again, and a moving tag means "roll back to the previous SHA" stops
+  # meaning anything. Both are one careless line, and neither shows up in a test
+  # of the application.
+  deployment-config:
+    name: Production compose is deployable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check production compose
+        run: ./docker/check-prod-images.sh
+
+  # Builds and publishes the images §20.2's deploy sequence pulls.
+  #
+  # Only on `main`, and only after both test jobs pass: an image tagged with a
+  # commit is a claim that the commit is deployable, and publishing one for a
+  # red pipeline makes the tag mean nothing.
+  publish:
+    name: Publish images to GHCR
+    runs-on: ubuntu-latest
+    needs: [verify, integration, deployment-config]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      # The only credential this needs. `GITHUB_TOKEN` is minted per run and
+      # expires with it, so there is no registry password to store or rotate.
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Three images from two Dockerfiles, all tagged with the same commit.
+      #
+      # `api` and `worker` deliberately share one image and differ only in their
+      # command (§1.2), so there is no `worker` image to build.
+      #
+      # `migrate` is a *stage* of the same Dockerfile rather than a fourth
+      # service's file: the Prisma CLI is a dev dependency and is gone from the
+      # runtime image, which installs with `--prod`. Building it from the same
+      # source at the same commit is what makes "the migration that ships with
+      # this deploy" a fact rather than a convention.
+      #
+      # No `latest`, and no branch tag. A moving tag is a deployment whose
+      # contents change under it, which is exactly what rollback needs not to
+      # happen.
+      - name: Build and push api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          target: runtime
+          push: true
+          tags: ghcr.io/${{ github.repository }}/api:${{ github.sha }}
+          # Stamps the commit into the image itself, so `docker inspect`
+          # on a running container answers "which SHA is live?" without
+          # trusting whatever the host's env file currently says.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push migrate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          target: migrate
+          push: true
+          tags: ghcr.io/${{ github.repository }}/migrate:${{ github.sha }}
+          # Stamps the commit into the image itself, so `docker inspect`
+          # on a running container answers "which SHA is live?" without
+          # trusting whatever the host's env file currently says.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # Same scope as `api`: the two share every layer up to the build
+          # stage, so one cache serves both and the second build is nearly free.
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/web.Dockerfile
+          target: runtime
+          push: true
+          tags: ghcr.io/${{ github.repository }}/web:${{ github.sha }}
+          # Stamps the commit into the image itself, so `docker inspect`
+          # on a running container answers "which SHA is live?" without
+          # trusting whatever the host's env file currently says.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Summarise what to deploy
+        run: |
+          {
+            echo '## Deployable'
+            echo
+            echo 'On the host:'
+            echo
+            echo '```sh'
+            echo "GEMONE_IMAGE_REPOSITORY=ghcr.io/${{ github.repository }} \\"
+            echo "GEMONE_IMAGE_TAG=${{ github.sha }} \\"
+            echo '  docker compose -f docker-compose.prod.yml up -d'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,173 @@
+# Local development stack — ARCHITECTURE.md §20.4.
+#
+# Postgres and Redis are here from the start even though no code uses them
+# yet: integration tests run against real instances (§18.3), and a developer
+# should never have to install a database by hand to run the suite.
+
+name: gemone
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gemone
+      POSTGRES_PASSWORD: gemone_dev
+      POSTGRES_DB: gemone
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U gemone -d gemone']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No persistence in development: Redis holds cache, counters and queue
+    # state, all reconstructible (§20.3).
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      APP_ROLE: api
+      PORT: 3000
+      LOG_LEVEL: debug
+      LOG_PRETTY: 'false'
+      DATABASE_URL: postgresql://gemone:gemone_dev@postgres:5432/gemone?schema=public
+      REDIS_URL: redis://redis:6379
+      # Development values with development-sized consequences. Production
+      # supplies its own through the environment (§5.1) — never these.
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-at-least-32-chars}
+      CLICK_SIGNING_SECRET: ${CLICK_SIGNING_SECRET:-dev-click-secret-change-me-at-least-32ch}
+      PROVIDER_MOCK_SECRET: ${PROVIDER_MOCK_SECRET:-mock-fixture-secret}
+      PROVIDER_MOCK_AFFILIATE_ID: ${PROVIDER_MOCK_AFFILIATE_ID:-AFF-DEV}
+      # Behind Caddy, so the client IP comes from X-Forwarded-For with one hop.
+      TRUST_PROXY_HOPS: '1'
+      # Where emailed links point. Unset SMTP_* means the logging provider, so
+      # the stack needs no mail account to be usable.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:8080}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Liveness, not readiness — a health check that touches the database
+      # restarts a healthy process whenever the database hiccups (§17.2).
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://127.0.0.1:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      # The internal network name, not a public URL. The browser never uses
+      # this address — it is the second hop of §6.2, and the whole reason the
+      # API needs no CORS configuration.
+      API_URL: http://api:3000
+      # SvelteKit rejects form posts whose Origin does not match. Behind Caddy
+      # the process cannot infer its own public address, so it is told.
+      ORIGIN: http://localhost:8080
+    ports:
+      # Published for development. In production only Caddy reaches it (§19.1).
+      - '5173:3000'
+    depends_on:
+      api:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    # Same image as `api`. Only the entrypoint differs.
+    command: ['node', 'apps/api/dist/worker.js']
+    environment:
+      NODE_ENV: development
+      APP_ROLE: worker
+      LOG_LEVEL: debug
+      LOG_PRETTY: 'false'
+      DATABASE_URL: postgresql://gemone:gemone_dev@postgres:5432/gemone?schema=public
+      REDIS_URL: redis://redis:6379
+      # Development values with development-sized consequences. Production
+      # supplies its own through the environment (§5.1) — never these.
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-at-least-32-chars}
+      CLICK_SIGNING_SECRET: ${CLICK_SIGNING_SECRET:-dev-click-secret-change-me-at-least-32ch}
+      PROVIDER_MOCK_SECRET: ${PROVIDER_MOCK_SECRET:-mock-fixture-secret}
+      PROVIDER_MOCK_AFFILIATE_ID: ${PROVIDER_MOCK_AFFILIATE_ID:-AFF-DEV}
+      # Behind Caddy, so the client IP comes from X-Forwarded-For with one hop.
+      TRUST_PROXY_HOPS: '1'
+      # Where emailed links point. Unset SMTP_* means the logging provider, so
+      # the stack needs no mail account to be usable.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:8080}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Zone 1 (§19.1): TLS, coarse rate limits, routing. It is what puts the
+    # postback endpoints on a public address without letting them through
+    # `web`, and nothing in the stack worked end to end until it was here.
+    ports:
+      - '8080:80'
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # http:// so Caddy serves plain HTTP locally instead of trying to obtain
+      # a certificate for a name that does not resolve.
+      SITE_ADDRESS: http://localhost
+    depends_on:
+      - api
+      - web
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

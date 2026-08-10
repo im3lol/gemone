@@ -1,0 +1,63 @@
+{
+  "status": "ok",
+  "requested_at": "2026-01-14T09:12:44Z",
+  "count": 4,
+  "campaigns": [
+    {
+      "campaign_id": "MK-100241",
+      "name": "Skyline Racer — reach level 12",
+      "short_desc": "Install and play until you clear level 12.",
+      "instructions": "Install the game, open it, and complete level 12 within 7 days. Rewards are credited within 24 hours.",
+      "payout": "2.45",
+      "payout_currency": "USD",
+      "categories": ["mobile_game", "ios"],
+      "geo": ["US", "CA", "GB"],
+      "platforms": ["mobile"],
+      "thumbnail": "https://cdn.mock-offers.test/creatives/mk-100241.png",
+      "tracking_url": "https://track.mock-offers.test/click?cid={campaign_id}&aff={affiliate_id}&s1={sub_id}",
+      "multi_step": true
+    },
+    {
+      "campaign_id": "MK-100242",
+      "name": "Finance survey — 5 minutes",
+      "short_desc": "Answer a short survey about your banking habits.",
+      "instructions": null,
+      "payout": "0.80",
+      "payout_currency": "USD",
+      "categories": ["survey"],
+      "geo": ["US"],
+      "platforms": ["desktop", "mobile", "tablet"],
+      "thumbnail": null,
+      "tracking_url": "https://track.mock-offers.test/click?cid={campaign_id}&aff={affiliate_id}&s1={sub_id}",
+      "multi_step": false
+    },
+    {
+      "campaign_id": "MK-100243",
+      "name": "Sign up for Mockbox Cloud",
+      "short_desc": "Create a free account and confirm your email.",
+      "instructions": "Registration must be completed with a valid email address.",
+      "payout": "1.00",
+      "payout_currency": "EUR",
+      "categories": ["signup", "trial"],
+      "geo": [],
+      "platforms": ["desktop"],
+      "thumbnail": "https://cdn.mock-offers.test/creatives/mk-100243.png",
+      "tracking_url": "https://track.mock-offers.test/click?cid={campaign_id}&aff={affiliate_id}&s1={sub_id}",
+      "multi_step": false
+    },
+    {
+      "campaign_id": "MK-100244",
+      "name": "",
+      "short_desc": "A campaign the provider left half-populated.",
+      "instructions": null,
+      "payout": "not-a-number",
+      "payout_currency": "USD",
+      "categories": [],
+      "geo": ["US"],
+      "platforms": ["mobile"],
+      "thumbnail": null,
+      "tracking_url": "https://track.mock-offers.test/click?cid={campaign_id}",
+      "multi_step": false
+    }
+  ]
+}

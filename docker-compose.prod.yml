@@ -1,0 +1,516 @@
+# Production stack — ARCHITECTURE.md §19.1, §20.
+#
+# A separate file rather than an override of `docker-compose.yml`, because the
+# difference that matters is a **removal**: the development file publishes
+# Postgres, Redis, the API and web to the host, and Compose overrides merge
+# `ports` lists rather than replacing them. There is no way to un-publish a port
+# in an override, so an override would have shipped the database to the internet.
+#
+# Zone 3 (postgres, redis) and Zone 2 (api, worker, web) have no published
+# ports at all. Caddy is the only way in, which is what makes its TLS, its
+# headers and its rate limiting non-optional rather than advisory.
+#
+# Secrets use `${VAR:?message}`: Compose refuses to start when they are unset
+# rather than substituting a default. The development file keeps its defaults —
+# this is the only place that difference lives.
+#
+# ## Images, not builds — §20.2
+#
+# Every application service names an image that CI already built and pushed;
+# nothing here compiles. Building on the production host meant a deploy needed
+# the full source and the dev dependencies, took the site down for the length of
+# a `pnpm install`, and — the part that actually matters — left nothing to go
+# back to, because there was no artefact, only a working tree.
+#
+# **Two variables, and one of them is the whole deployment:**
+#
+#     GEMONE_IMAGE_REPOSITORY=ghcr.io/<owner>/<repo>
+#     GEMONE_IMAGE_TAG=<the commit SHA CI built>
+#
+# `api`, `worker` and `migrate` all read the same `GEMONE_IMAGE_TAG`, so a
+# deployment cannot end up running one commit's API against another commit's
+# migrations — the mismatch that turns a bad deploy into a bad schema. Rolling
+# back is the same command with the previous SHA.
+#
+# No `latest` and no branch tag, deliberately: a tag whose contents change is a
+# tag you cannot roll back to.
+
+name: gemone
+
+# Bounded container logs — ARCHITECTURE.md §16.1.
+#
+# Docker's default `json-file` driver has **no size limit**: a container's log
+# grows until the disk is full, and on a single VPS every service shares one
+# disk with the database. The API logs a line per HTTP request at info level,
+# so the growth is proportional to traffic — the log gets largest exactly when
+# the site is busiest, and Postgres stops accepting writes when the filesystem
+# fills. Nothing reclaims that space on its own; `docker logs` truncates only
+# when the container is removed, which for `restart: unless-stopped` is never.
+#
+# 10 MB × 3 files caps each service at 30 MB, and the whole stack under ~270 MB
+# regardless of traffic or uptime. Rotation is by size, not by age, so the
+# window is however long 30 MB of logs takes to produce — hours under load,
+# months when idle. That is the trade this makes deliberately: **it is a disk
+# guarantee, not a retention guarantee.** Retention beyond the current window
+# needs somewhere off this host to ship lines to, which is a service and a
+# decision this MVP does not have (P4, P6) — the same shape as T72 for backups.
+#
+# Applied to every service without exception, including ones that barely log
+# and `migrate`, which exits: an unlimited default that only applies to
+# services somebody judged quiet is one careless addition away from being the
+# service that fills the disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '3'
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-gemone}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-gemone}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *logging
+    # Holds cache, counters and queue state — all reconstructible (§20.3).
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Applies migrations and exits. `api` waits for it to succeed, so the API can
+  # never serve a request against a schema that has not been brought up to date.
+  migrate:
+    image: ${GEMONE_IMAGE_REPOSITORY:?GEMONE_IMAGE_REPOSITORY is required}/migrate:${GEMONE_IMAGE_TAG:?GEMONE_IMAGE_TAG is required}
+    logging: *logging
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    image: ${GEMONE_IMAGE_REPOSITORY:?GEMONE_IMAGE_REPOSITORY is required}/api:${GEMONE_IMAGE_TAG:?GEMONE_IMAGE_TAG is required}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      NODE_ENV: production
+      APP_ROLE: api
+      PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_PRETTY: 'false'
+      COOKIE_SECURE: 'true'
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      CLICK_SIGNING_SECRET: ${CLICK_SIGNING_SECRET:?CLICK_SIGNING_SECRET is required}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:?PUBLIC_APP_URL is required}
+      # Not used by this process — checked against `PUBLIC_APP_URL` at startup.
+      # The two are set independently and a disagreement between them makes
+      # every form post fail with 403; this is where the deploy stops instead.
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required}
+      # Behind Caddy, so the client IP comes from X-Forwarded-For with one hop.
+      TRUST_PROXY_HOPS: '1'
+      # Required in production: without a host the API resolves the logging
+      # provider, which writes password-reset links into the log. The API
+      # refuses to boot without one; this refuses earlier, with a named value.
+      SMTP_HOST: ${SMTP_HOST:?SMTP_HOST is required}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      # A relay on the internal network may need no credentials, so these stay
+      # optional — but the schema rejects half a pair.
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:?SMTP_FROM is required}
+    labels:
+      # Restarted by `autoheal` when its health check fails — see that service.
+      gemone.autoheal: 'true'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # Liveness, not readiness — a check that touches the database restarts a
+      # healthy process whenever the database hiccups (§17.2).
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://127.0.0.1:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    # The same image as `api`, by construction rather than by convention: one
+    # variable names it, so they cannot end up on different commits (§1.2).
+    image: ${GEMONE_IMAGE_REPOSITORY:?GEMONE_IMAGE_REPOSITORY is required}/api:${GEMONE_IMAGE_TAG:?GEMONE_IMAGE_TAG is required}
+    restart: unless-stopped
+    logging: *logging
+    # Same image as `api`. Only the entrypoint differs.
+    command: ['node', 'apps/api/dist/worker.js']
+    environment:
+      NODE_ENV: production
+      APP_ROLE: worker
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_PRETTY: 'false'
+      COOKIE_SECURE: 'true'
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      CLICK_SIGNING_SECRET: ${CLICK_SIGNING_SECRET:?CLICK_SIGNING_SECRET is required}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:?PUBLIC_APP_URL is required}
+      # Same image, same schema (§1.2): the worker validates its environment
+      # exactly as `api` does, so it needs the same value to check against.
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required}
+      # The process that actually sends: every email leaves from here.
+      SMTP_HOST: ${SMTP_HOST:?SMTP_HOST is required}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:?SMTP_FROM is required}
+    labels:
+      # Restarted by `autoheal` when its heartbeat stops — see that service.
+      gemone.autoheal: 'true'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # The worker serves no HTTP, so liveness is the heartbeat it writes to
+      # Redis while its event loop is turning. A process that is "running" but
+      # no longer consuming stops crediting conversions silently, which is the
+      # failure this exists to make visible.
+      test: ['CMD', 'node', 'apps/api/dist/worker-health.js']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    image: ${GEMONE_IMAGE_REPOSITORY:?GEMONE_IMAGE_REPOSITORY is required}/web:${GEMONE_IMAGE_TAG:?GEMONE_IMAGE_TAG is required}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      API_URL: http://api:3000
+      # Must match the public address, or SvelteKit rejects every form post as
+      # cross-site.
+      ORIGIN: ${PUBLIC_APP_URL:?PUBLIC_APP_URL is required}
+      # Where `getClientAddress()` reads the caller's address from, and what
+      # `web` then forwards to the API (§19.5). Without it `adapter-node`
+      # returns the socket peer — Caddy — so every per-IP control on the API
+      # side would count the whole platform into one bucket.
+      #
+      # Caddy *replaces* this header with the address it observed, so what
+      # arrives is one entry and a browser cannot choose its own bucket by
+      # sending one of its own. Safe only because nothing but Caddy can
+      # reach this service: `adapter-node` throws when the header is absent,
+      # which is why the development file deliberately does not set it.
+      ADDRESS_HEADER: X-Forwarded-For
+      XFF_DEPTH: '1'
+    labels:
+      # Restarted by `autoheal` when its health check fails — see that service.
+      gemone.autoheal: 'true'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # `GET /login`, because it is the one page that proves the server is
+      # actually serving without depending on anything else being up.
+      #
+      # It has no server `load` — only a form action — so a GET runs the hook,
+      # the layout and the render, and makes no API call. A check that fetched
+      # a page which loads from the API would restart a perfectly healthy `web`
+      # every time the API hiccuped: liveness, not readiness (§17.2), the same
+      # distinction `api`'s own check is built on.
+      #
+      # Not a static asset either: `adapter-node` serves those from `build/client`
+      # before the request reaches SvelteKit, so a static 200 would still be
+      # returned by a server whose SSR handler was wedged.
+      #
+      # Node rather than `wget`: the runtime image has no shell tooling worth
+      # relying on, and this is the same check `api` uses.
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://127.0.0.1:3000/login',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # The busiest logger in the stack: it sees every request, including the ones
+    # the API never gets — probes, scanners, TLS handshakes.
+    logging: *logging
+    # The only published ports in the stack.
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # The domain. Caddy obtains and renews the certificate for it, which is
+      # why it is a bare hostname here and not a URL.
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required}
+    depends_on:
+      - api
+      - web
+
+  # Nightly `pg_dump` — ARCHITECTURE.md §20.3.
+  #
+  # The same image as the database, so the dump is taken by the `pg_dump` that
+  # matches the server. Its own service rather than a cron entry on the host: a
+  # backup that only exists on somebody's crontab is one that does not survive
+  # rebuilding the machine it protects.
+  #
+  # **This covers losing the data, not losing the host.** The dumps live in a
+  # volume on this VPS, which recovers a bad migration, a mistaken DELETE or a
+  # corrupted table — and recovers nothing if the disk goes. Shipping them off
+  # the machine needs somewhere to ship them to, which is a decision and a
+  # credential nobody has made yet: T72.
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATABASE: ${POSTGRES_DB:-gemone}
+      # 02:00 UTC: after the nightly reconciliation at 03:00 would mean backing
+      # up before the job that might reveal a problem, so this runs first and
+      # the drift report has a snapshot from before it to compare against.
+      BACKUP_AT_UTC: ${BACKUP_AT_UTC:-02:00}
+      # §20.3: daily for a month, weekly for a quarter.
+      BACKUP_KEEP_DAILY_DAYS: ${BACKUP_KEEP_DAILY_DAYS:-30}
+      BACKUP_KEEP_WEEKLY_DAYS: ${BACKUP_KEEP_WEEKLY_DAYS:-90}
+    volumes:
+      - ./docker/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./docker/restore.sh:/usr/local/bin/restore.sh:ro
+      - backup_data:/backups
+    entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Waits for the schema, not just for a database that accepts connections.
+      # Measured, not anticipated: with only `postgres: service_healthy` the
+      # startup dump raced `migrate` and captured an empty database — a valid,
+      # readable, completely useless 831-byte file, and on a fresh deployment
+      # the only backup it would hold for its first day.
+      migrate:
+        condition: service_completed_successfully
+    labels:
+      gemone.autoheal: 'true'
+    healthcheck:
+      # Not "is the process running" — a sleep loop that has stopped taking
+      # backups is still running. This asks the only question that matters:
+      # is there a recent dump? Twenty-six hours leaves room for a slow night
+      # without reporting a working schedule as broken.
+      test:
+        ['CMD-SHELL', 'find /backups/daily -name "gemone-*.dump" -mmin -1560 | grep -q .']
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      # The first dump is taken at startup, but a large database takes a while.
+      start_period: 5m
+
+  # Ships the dumps off this host — ARCHITECTURE.md §20.3, T72.
+  #
+  # The half `backup` cannot do: a dump in a volume on this VPS survives a bad
+  # migration and not the machine. This encrypts each dump, uploads it to
+  # S3-compatible storage, reads it back through the same encryption to prove
+  # it matches, and only then records it — see `docker/backup-remote.sh`.
+  #
+  # Its own container because `postgres:17-alpine` has no HTTP client and no
+  # crypto tooling, and production runs published images rather than building
+  # (§20.2). `rclone` is one static binary: encryption, transfer and remote
+  # retention, no SDK and no framework.
+  #
+  # **Every setting is required.** There is no default endpoint, bucket or
+  # passphrase, and Compose refuses to start without them: off-host backups
+  # that are optional are off-host backups that are missing.
+  backup-remote:
+    image: rclone/rclone:1.71
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      # Any S3-compatible provider. Nothing here names one.
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:?BACKUP_S3_ENDPOINT is required — the S3-compatible endpoint URL}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:?BACKUP_S3_BUCKET is required}
+      BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-gemone}
+      # Required, not defaulted: SigV4 signs the region into every request, so
+      # a value that disagrees with the endpoint is rejected wholesale. The
+      # obvious default — `us-east-1` — is correct for AWS and wrong for every
+      # provider that puts its region in its own hostname, and the symptom is a
+      # stack that starts cleanly and never manages to upload anything.
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:?BACKUP_S3_REGION is required — it must match the endpoint's region}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:?BACKUP_S3_ACCESS_KEY_ID is required}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:?BACKUP_S3_SECRET_ACCESS_KEY is required}
+      # Client-side, so the provider stores ciphertext it cannot read. Losing
+      # this passphrase loses every off-host backup — it belongs wherever the
+      # other launch secrets are kept, not only on this machine.
+      BACKUP_ENCRYPTION_PASSPHRASE: ${BACKUP_ENCRYPTION_PASSPHRASE:?BACKUP_ENCRYPTION_PASSPHRASE is required — at least 32 characters}
+      # Mirrors §20.3's local windows: daily for a month, weekly for a quarter.
+      BACKUP_REMOTE_KEEP_DAILY_DAYS: ${BACKUP_REMOTE_KEEP_DAILY_DAYS:-30}
+      BACKUP_REMOTE_KEEP_WEEKLY_DAYS: ${BACKUP_REMOTE_KEEP_WEEKLY_DAYS:-90}
+      BACKUP_REMOTE_INTERVAL: ${BACKUP_REMOTE_INTERVAL:-300}
+    entrypoint: ['/bin/sh', '/usr/local/bin/backup-remote.sh']
+    volumes:
+      - ./docker/backup-remote.sh:/usr/local/bin/backup-remote.sh:ro
+      # The same volume `backup` writes into. Read-write only because the
+      # receipts live beside the dumps; this script deletes no dump, ever.
+      - backup_data:/backups
+    depends_on:
+      backup:
+        condition: service_started
+    labels:
+      gemone.autoheal: 'true'
+    healthcheck:
+      # Receipts, not dumps. A dump proves a file exists on this disk, which is
+      # the thing T72 says is not a backup — so health here asks whether one
+      # left the building recently. Uploads failing while local backups keep
+      # succeeding is precisely the state that must read as unhealthy.
+      test:
+        ['CMD-SHELL', 'find /backups/remote/daily -name "gemone-*.dump.json" -mmin -1560 | grep -q .']
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      # The first upload waits for the first dump and then a poll interval.
+      start_period: 10m
+
+  # Acts on the health checks — ARCHITECTURE.md §17.2.
+  #
+  # **Docker's `restart` policy reacts to a process exiting, never to a health
+  # check failing.** Nothing in plain Compose does: `condition: service_healthy`
+  # is consulted once, while dependencies start. So a container whose health
+  # check fails forever stays `unhealthy` and running, and the worker heartbeat
+  # — which exists precisely to detect a worker that is up but no longer
+  # consuming — had no consumer at all. Verified before adding this: a container
+  # with `--restart unless-stopped` and a failing check reported
+  # `Health=unhealthy Running=true RestartCount=0`.
+  #
+  # This polls Docker for containers that are *both* labelled below and
+  # `unhealthy`, and restarts those. It is a loop around one API call, not a
+  # monitoring platform (P6) — alerting stays deferred.
+  #
+  # **On the socket.** This container does not hold it. Restarting a container
+  # is a write and the Docker API is root on the host, so what used to be
+  # mounted here was the ability to create a privileged container that mounts
+  # `/` — a compromise of this one image was a compromise of the VPS. It now
+  # talks to `socket-proxy` instead, over a unix socket that carries two
+  # requests and rejects everything else (T71).
+  #
+  # The label filter remains what bounds *intent*: only the application
+  # services carry it — `api`, `worker`, `web` and `backup` — so postgres,
+  # redis and caddy are never restarted in normal operation. It is autoheal's
+  # own behaviour, not the proxy's, which is why the proxy exists.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      # Only containers carrying this label, and only when unhealthy.
+      AUTOHEAL_CONTAINER_LABEL: gemone.autoheal
+      AUTOHEAL_INTERVAL: 15
+      # Grace after a restart, so a container that is slow to come up is not
+      # restarted again while it is still starting.
+      AUTOHEAL_START_PERIOD: 60
+      # Seconds Docker waits for a graceful stop before killing. A wedged
+      # process will not answer SIGTERM, and waiting the default 10s per
+      # restart is time the queue is not being consumed.
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: 20
+      # The proxy's socket, not the host's. autoheal treats any value that is
+      # not `tcp://` as a unix socket path, so this needs no TLS, no client
+      # certificates and no listening port.
+      DOCKER_SOCK: /run/docker-proxy/docker.sock
+    volumes:
+      - docker_proxy_socket:/run/docker-proxy
+    depends_on:
+      # Its entrypoint checks for the socket file before it starts polling, so
+      # it must not start before the proxy has created one.
+      socket-proxy:
+        condition: service_healthy
+
+  # The only container that holds the Docker socket — T71.
+  #
+  # HAProxy in front of `/var/run/docker.sock`, publishing a second unix socket
+  # that carries exactly the two requests `autoheal` makes: list the unhealthy
+  # containers carrying the label, and restart one by id. The rules are in
+  # `docker/docker-socket-proxy.cfg`, and the last one is a deny.
+  #
+  # **This container is now the trusted one.** It runs as root because HAProxy
+  # must be able to open a socket owned by `root:docker`, and it connects to
+  # the real API — anything that executes inside it is root on the host, just
+  # as `autoheal` was before. What changed is what it takes to get there: a
+  # config file that speaks no application protocol and holds no credentials,
+  # instead of a shell script polling a JSON API. T71 states the boundary that
+  # remains.
+  socket-proxy:
+    image: haproxy:3.2-alpine
+    restart: unless-stopped
+    logging: *logging
+    # Deliberately no `ports:` — the socket lives in a volume, so there is no
+    # listener on the host or on the internal network to reach at all.
+    user: root
+    volumes:
+      - ./docker/docker-socket-proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      # Read-only would be theatre and is not claimed as protection: every call
+      # that matters is a write made *through* this socket, not to the file.
+      # The restriction is the rule set, not the mount flag.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - docker_proxy_socket:/run/docker-proxy
+    healthcheck:
+      # The socket exists, which is what `autoheal` waits for. Not labelled for
+      # autoheal: a proxy restarted by the thing that depends on it is a loop.
+      test: ['CMD-SHELL', 'test -S /run/docker-proxy/docker.sock']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  postgres_data:
+  # Carries the proxy's socket to `autoheal` and nothing else. A volume rather
+  # than a host path: nothing outside this stack can reach it.
+  docker_proxy_socket:
+  # Deliberately a separate volume from `postgres_data`: the point of a backup
+  # is to survive what happens to the thing it backs up, and a dump inside the
+  # database's own volume is lost to exactly the accident that removes it.
+  backup_data:
+  caddy_data:
+  caddy_config:

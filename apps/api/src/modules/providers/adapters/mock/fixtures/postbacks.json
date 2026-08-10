@@ -1,0 +1,60 @@
+{
+  "_comment": [
+    "Captured postbacks — ARCHITECTURE.md §7.2, rule 6.",
+    "",
+    "Signed with the fixture secret 'mock-fixture-secret'. That value is",
+    "committed on purpose: it authenticates nothing, it is never a deployment's",
+    "real credential, and a fixture whose signature cannot be reproduced is a",
+    "fixture that can only be tested by disabling the check it exists to test.",
+    "",
+    "Fixtures are how provider format drift gets caught before production does.",
+    "When a real network changes a field, the contract tests here fail in CI —",
+    "which is the whole point of keeping captured payloads rather than",
+    "hand-built objects that always agree with the parser."
+  ],
+
+  "confirmed": {
+    "query": {
+      "campaign_id": "MK-100241",
+      "currency": "USD",
+      "event_time": "2026-01-14T10:03:11Z",
+      "payout": "2.45",
+      "reversed": "0",
+      "status": "1",
+      "sub_id": "c3f1a0e2b9d4e77a",
+      "transaction_id": "MK-TX-88213",
+      "sig": "102b4606d1317d281fb69c78e9a3a0d75d4962fa354da6d4ad9c70c3a122ec92"
+    },
+    "sourceIp": "203.0.113.10"
+  },
+
+  "reversal": {
+    "query": {
+      "campaign_id": "MK-100241",
+      "currency": "USD",
+      "event_time": "2026-01-19T04:41:02Z",
+      "payout": "2.45",
+      "reversed": "1",
+      "status": "1",
+      "sub_id": "c3f1a0e2b9d4e77a",
+      "transaction_id": "MK-TX-88213-R",
+      "sig": "98fd3c2e4f3891e01a06ff7cf618a2e2e27429f130929e095254665982bb316f"
+    },
+    "sourceIp": "203.0.113.10"
+  },
+
+  "pending": {
+    "query": {
+      "campaign_id": "MK-100242",
+      "currency": "USD",
+      "event_time": "2026-01-14T11:20:00Z",
+      "payout": "0.80",
+      "reversed": "0",
+      "status": "0",
+      "sub_id": "ab19ff02c7d31e40",
+      "transaction_id": "MK-TX-88301",
+      "sig": "19d97a3fcf1e73155a04cf1aab1f9aa02fb571f0c7302636db7a7f09334b8e7f"
+    },
+    "sourceIp": "203.0.113.11"
+  }
+}
