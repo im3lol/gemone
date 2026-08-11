@@ -7,6 +7,7 @@ import {
   type AdminPayoutSummary,
   type ListPayoutsQuery,
   type Paginated,
+  type PayoutOptions,
   type PayoutStatus,
   type PayoutSummary,
 } from '@gemone/contracts';
@@ -98,6 +99,42 @@ export class PayoutsService {
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
+  // --- Options --------------------------------------------------------------
+
+  /**
+   * The rules the withdrawal form has to obey, for the person they constrain.
+   *
+   * All of it configuration this service already reads on every submission —
+   * the same keys, resolved the same way. Nothing is computed here, which is
+   * the point: a form that derived the minimum or the rate for itself would be
+   * a second copy of a rule an admin thinks they changed in one place.
+   *
+   * **Methods are filtered by what can actually settle them.** `submit`
+   * refuses a method the installed provider does not support, so listing one
+   * here would put a choice in a dropdown that the next click rejects. The
+   * manual provider supports everything, so today this removes nothing — it is
+   * the seam holding the day an automated provider handles some methods and
+   * not others.
+   */
+  async options(): Promise<PayoutOptions> {
+    const [methods, minimumPoints, maximumPoints, pointsPerCurrencyUnit, currency] =
+      await Promise.all([
+        this.configuration.get<string[]>(PAYOUTS_ENABLED_METHODS.key),
+        this.configuration.get<number>(PAYOUTS_MINIMUM_POINTS.key),
+        this.configuration.get<number>(PAYOUTS_MAXIMUM_POINTS.key),
+        this.configuration.get<number>(PAYOUTS_POINTS_PER_CURRENCY_UNIT.key),
+        this.configuration.get<string>(PAYOUTS_CURRENCY.key),
+      ]);
+
+    return {
+      methods: methods.filter((method) => this.provider.supports(method)),
+      minimumPoints,
+      maximumPoints,
+      pointsPerCurrencyUnit,
+      currency,
+    };
+  }
+
   // --- Submission -----------------------------------------------------------
 
   /**
@@ -178,7 +215,16 @@ export class PayoutsService {
      * costs nothing.
      */
     const created = await this.prisma.$transaction(async (tx) => {
-      const lock = await this.rewards.lock(input.userId, input.amountPoints, payoutId, tx);
+      // The method travels with the points (D85), so `/earnings` can say
+      // "Withdrawal requested · paypal" months after `paypal` stopped being
+      // one of the enabled methods.
+      const lock = await this.rewards.lock(
+        input.userId,
+        input.amountPoints,
+        payoutId,
+        { label: method },
+        tx,
+      );
 
       return tx.payoutRequest.create({
         data: {

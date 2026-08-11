@@ -742,6 +742,66 @@ describe('reward accounting (integration)', () => {
       expect((await rewards.getHistory(mine.id)).total).toBe(0);
     });
 
+    it('carries the name the caller gave the source, and gives it to the movements that act on it', async () => {
+      const user = await createUser();
+
+      const credit = await rewards.credit({
+        userId: user.id,
+        amountPoints: 100,
+        source: { ...conversionSource('conv-labelled'), label: 'Quick Survey' },
+      });
+
+      // Recorded at write time. There is nothing to join to — `sourceId`
+      // carries no foreign key and this module knows nothing about
+      // conversions (P2) — so the caller that moved the points supplied it.
+      expect(credit.sourceLabel).toBe('Quick Survey');
+
+      await prisma.rewardTransaction.update({
+        where: { id: credit.id },
+        data: { maturesAt: new Date(Date.now() - 1000) },
+      });
+
+      // A maturation and a chargeback are the same offer's story continuing.
+      // Without the copy, a statement reads "Points cleared" with no
+      // indication of which points.
+      const maturation = await rewards.mature(credit.id);
+      expect(maturation?.sourceLabel).toBe('Quick Survey');
+
+      const reversal = await rewards.reverse(credit.id, 'chargeback');
+      expect(reversal.sourceLabel).toBe('Quick Survey');
+    });
+
+    it('leaves the name null when the caller had none to give', async () => {
+      const user = await createUser();
+
+      const credit = await rewards.credit({
+        userId: user.id,
+        amountPoints: 100,
+        source: conversionSource(),
+      });
+
+      // Null is the honest answer, and the reason nothing backfills it: the
+      // only name that would be recoverable is today's offer title, which is
+      // not what the user was shown.
+      expect(credit.sourceLabel).toBeNull();
+    });
+
+    it('lets a caller name a different source than the one it is acting on', async () => {
+      const user = await createUser();
+
+      const credit = await rewards.credit({
+        userId: user.id,
+        amountPoints: 100,
+        source: { ...conversionSource('conv-a'), label: 'Original offer' },
+      });
+
+      const reversal = await rewards.reverse(credit.id, 'chargeback', {
+        source: { type: REWARD_SOURCE_TYPES.CONVERSION, id: 'conv-b', label: 'Something else' },
+      });
+
+      expect(reversal.sourceLabel).toBe('Something else');
+    });
+
     it('finds the movement a given source caused', async () => {
       const user = await createUser();
       await rewards.credit({

@@ -1,82 +1,121 @@
+<!--
+  Reviewing one withdrawal — ARCHITECTURE.md §11.3, DATABASE.md §3.5.
+
+  ```
+  ← Payout queue
+  5,000 points · $5.00 USD · Ref 1442C767      [Pending review]
+  ┌───────────────────────────┐ ┌──────────────────────────────┐
+  │ Send the money to         │ │ Decide                       │
+  │ the destination           │ │ Approve / Reject             │
+  ├───────────────────────────┤ └──────────────────────────────┘
+  │ The account               │
+  │ age · status · balances   │
+  │ conversions · chargebacks │
+  │ fraud signals             │
+  └───────────────────────────┘
+  ```
+
+  The decision panel is second in the DOM so it comes first on a phone: an
+  admin opening this on a phone is deciding, and the evidence is what they
+  scroll to. On desktop it sits beside the evidence rather than under it.
+
+  ## The destination is shown, and that is the point
+
+  This is the only view in the product that returns a payment destination — the
+  admin has to read it to send the money. §3.5 pairs that with an audit entry
+  written on the read, so the panel says so out loud rather than leaving the
+  administrator to discover it.
+-->
 <script lang="ts">
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+
+  import { ReviewActions, ReviewContext } from '$lib/components/admin';
+  import { Badge, Card } from '$lib/components/ui';
+  import { payoutReference, queueState, accountReference } from '$lib/admin/payout-queue';
+  import { formatCash, methodName } from '$lib/payouts/payout';
+  import { absoluteDate, formatPoints } from '$lib/rewards/ledger';
+
   let { data, form } = $props();
 
-  let payout = $derived(data.payout);
-  let context = $derived(data.payout.reviewContext);
+  const payout = $derived(data.payout);
+  const state = $derived(queueState(payout.status));
 </script>
 
-<svelte:head><title>Review payout</title></svelte:head>
+<svelte:head><title>Payout {payoutReference(payout.id)} · GemOne admin</title></svelte:head>
 
-<p><a href="/admin/payouts">← Payout queue</a></p>
+<div class="flex flex-col gap-5">
+  <a
+    href="/admin/payouts"
+    class="inline-flex w-fit items-center gap-1.5 text-sm font-medium text-text-secondary"
+  >
+    <ArrowLeft size={16} aria-hidden="true" />
+    Payout queue
+  </a>
 
-<h1>{payout.amountPoints} points → {(payout.cashAmountMinor / 100).toFixed(2)} {payout.cashCurrency}</h1>
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 class="font-display text-2xl font-bold tracking-tight text-text">
+        {formatPoints(payout.amountPoints)} points
+      </h1>
+      <p class="gm-subtitle mt-1">
+        {formatCash(payout.cashAmountMinor, payout.cashCurrency)}
+        {payout.cashCurrency} · requested {absoluteDate(payout.createdAt)} ·
+        account <span class="font-mono">{accountReference(payout.userId)}</span> ·
+        ref <span class="font-mono">{payoutReference(payout.id)}</span>
+      </p>
+    </div>
 
-{#if form?.message}<p class="error">{form.message}</p>{/if}
-{#if form?.done}<p class="notice">Recorded: {form.done}.</p>{/if}
+    <Badge variant={state.tone}>{state.label}</Badge>
+  </div>
 
-<dl>
-  <dt>Status</dt><dd>{payout.status}</dd>
-  <dt>Method</dt><dd>{payout.method}</dd>
-  <dt>Destination</dt><dd>{payout.destination}</dd>
-  <dt>Requested</dt><dd>{payout.createdAt}</dd>
-  {#if payout.externalReference}
-    <dt>Reference</dt><dd>{payout.externalReference}</dd>
-  {/if}
-</dl>
+  <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
+    <!-- Second in the DOM, first on a phone. -->
+    <div class="flex flex-col gap-5 lg:order-2">
+      <ReviewActions status={payout.status} result={form} />
+    </div>
 
-<h2>The account</h2>
+    <div class="flex flex-col gap-5 lg:order-1">
+      <Card as="section" padding="lg" class="flex flex-col gap-3" aria-labelledby="destination-title">
+        <div>
+          <h2 id="destination-title" class="gm-card-title">Send the money to</h2>
+          <p class="gm-subtitle mt-1">
+            {methodName(payout.method)} · at the rate of {payout.pointsPerCurrencyUnit.toLocaleString(
+              'en-US',
+            )} points per {payout.cashCurrency}, as stored on this request.
+          </p>
+        </div>
 
-<dl>
-  <dt>Member since</dt><dd>{context.accountCreatedAt.slice(0, 10)}</dd>
-  <dt>Status</dt><dd>{context.accountStatus}</dd>
-  <dt>Balance</dt>
-  <dd>{context.balance.available} available · {context.balance.pending} pending · {context.balance.locked} locked</dd>
-  <dt>Conversions</dt><dd>{context.conversionCount}</dd>
-  <dt>Chargebacks</dt><dd>{context.chargebackCount}</dd>
-  <dt>Paid before</dt><dd>{context.paidPayoutCount}</dd>
-</dl>
+        <!--
+          `break-all` because a destination can be an IBAN or a wallet address
+          with no spaces in it, and one that overflowed its card would be one
+          an admin cannot read — on the single screen where reading it exactly
+          is the whole job.
+        -->
+        <p class="rounded-block border border-border bg-surface-muted px-3 py-2 font-mono break-all text-text">
+          {payout.destination}
+        </p>
 
-{#if payout.status === 'PENDING_REVIEW'}
-  <h2>Decide</h2>
+        <p class="gm-caption">
+          This is the only view that shows a payment destination, and opening it was
+          recorded against your account.
+        </p>
 
-  <form method="POST" action="?/approve">
-    <label>Reason (optional)<input name="reason" /></label>
-    <button type="submit">Approve</button>
-  </form>
+        {#if payout.externalReference}
+          <p class="border-t border-border pt-3 text-sm">
+            <span class="text-text-secondary">Paid under reference</span>
+            <span class="font-mono font-medium text-text">{payout.externalReference}</span>
+          </p>
+        {/if}
 
-  <form method="POST" action="?/reject">
-    <label>Reason<input name="reason" required /></label>
-    <button type="submit">Reject</button>
-  </form>
-{:else if payout.status === 'APPROVED'}
-  <h2>Record the payment</h2>
+        {#if payout.reviewReason}
+          <p class="border-t border-border pt-3 text-sm">
+            <span class="text-text-secondary">Reason on file</span>
+            <span class="font-medium text-text">{payout.reviewReason}</span>
+          </p>
+        {/if}
+      </Card>
 
-  <form method="POST" action="?/settle">
-    <label>
-      External reference
-      <input name="externalReference" required placeholder="Bank reference or transaction id" />
-    </label>
-    <button type="submit">Mark paid</button>
-  </form>
-{/if}
-
-<style>
-  dl {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.4rem 1rem;
-    margin-bottom: 1.5rem;
-  }
-
-  dt {
-    font-weight: 600;
-  }
-
-  dd {
-    margin: 0;
-  }
-
-  form {
-    margin-bottom: 1rem;
-  }
-</style>
+      <ReviewContext context={payout.reviewContext} />
+    </div>
+  </div>
+</div>

@@ -1,8 +1,15 @@
+import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-  plugins: [sveltekit()],
+  /*
+   * Tailwind before SvelteKit: the plugin has to see `src/app.css` as a CSS
+   * entry before Svelte's compiler starts pulling `<style>` blocks through the
+   * same pipeline. The token layer itself lives in that file, not here — there
+   * is no `tailwind.config.js` in v4 (docs/UI_KIT.md).
+   */
+  plugins: [tailwindcss(), sveltekit()],
   test: {
     /*
      * Server-side units only — ARCHITECTURE.md §18.

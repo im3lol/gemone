@@ -1,0 +1,1012 @@
+/**
+ * GemOne design foundation — docs/UI_KIT.md, docs/DESIGN_SYSTEM.md.
+ *
+ * ## How this file is organised
+ *
+ * 1. `@theme` — the token layer. Every colour, family, radius and container
+ *    width the product is allowed to use. Tailwind turns each entry into both a
+ *    CSS custom property and a utility class, so `--color-brand-500` is
+ *    reachable as `var(--color-brand-500)` and as `bg-brand-500`.
+ * 2. `@layer components` — the *recipes*: the handful of multi-property looks
+ *    (button, field, card, badge, alert, table, container, type scale) that the
+ *    design system repeats. Written as plain CSS against the tokens, so they
+ *    survive independently of Tailwind and can be `@apply`-free.
+ * 3. The same recipe blocks also carry **bare-element selectors**
+ *    (`input`, `button[type='submit']`, `h1`, `table`). That is deliberate: the
+ *    pages written before this phase use unadorned HTML, and listing the
+ *    element next to the class means they inherit the design system without a
+ *    single markup change and without the recipe being written twice.
+ *
+ * Everything sits in `@layer components` so that a Tailwind utility always
+ * wins: `class="gm-card p-8"` really does get 2rem of padding.
+ *
+ * ## The one value that must not drift
+ *
+ * `--color-brand-500: #10b981`. Legacy hard-coded Tailwind **v3**'s emerald
+ * scale; Tailwind v4's own `emerald-500` is `#00bb7f`, a visibly different
+ * green (DESIGN_SYSTEM.md §3.1). Never replace this scale with `emerald-*`.
+ */
+
+@import 'tailwindcss';
+
+/*
+ * Geist, self-hosted. `wght.css` is the upright variable face only — legacy
+ * uses no italic anywhere (DS §4.3), and the italic subsets would double the
+ * font payload for nothing. The subsets inside carry `unicode-range`, so a
+ * Latin page downloads exactly one file.
+ */
+@import '@fontsource-variable/geist/wght.css';
+
+@theme {
+  /* ------------------------------------------------------------------ brand
+   * DS §3.1 — the only custom scale. Tailwind v3 emerald, hard-coded.
+   */
+  --color-brand-50: #ecfdf5;
+  --color-brand-100: #d1fae5;
+  --color-brand-200: #a7f3d0;
+  --color-brand-300: #6ee7b7;
+  --color-brand-400: #34d399;
+  --color-brand-500: #10b981;
+  --color-brand-600: #059669;
+  --color-brand-700: #047857;
+  --color-brand-800: #065f46;
+  --color-brand-900: #064e3b;
+  --color-brand-950: #022c22;
+
+  /* --------------------------------------------------------------- surfaces
+   * DS §3.2 — slate, used semantically. The literal hexes are repeated here
+   * rather than aliased to `--color-slate-*` so that a token keeps its value
+   * even if Tailwind's palette is tree-shaken out of the emitted `:root`.
+   */
+  --color-background: #f8fafc; /* slate-50  — the page field           */
+  --color-surface: #ffffff; /* white     — every card              */
+  --color-surface-muted: #f8fafc; /* slate-50  — filled inputs, hovers   */
+  --color-border: #f1f5f9; /* slate-100 — the card hairline       */
+  --color-border-strong: #e2e8f0; /* slate-200 — field and button edges  */
+
+  /* ------------------------------------------------------------------- text
+   * DS §3.2. Four steps, each with one job. `text-body` is for prose,
+   * `text-secondary` for labels and subtitles, `text-muted` for units,
+   * timestamps and table headers.
+   */
+  --color-text: #0f172b; /* slate-900 */
+  --color-text-body: #45556c; /* slate-600 */
+  --color-text-secondary: #62748e; /* slate-500 */
+  --color-text-muted: #90a1b9; /* slate-400 */
+  --color-text-inverse: #ffffff;
+
+  /* --------------------------------------------------------------- semantic
+   * DS §3.3. Each family is a triple: `-soft` is the tint used as a
+   * background, the bare name is the solid/icon colour, `-text` is the
+   * readable foreground on `-soft`. Legacy pairs `-50` with `-600`/`-700`.
+   *
+   * `danger` is the token family; the `error` variant on Alert and Badge maps
+   * onto it. One colour, one name.
+   */
+  --color-success-soft: #ecfdf5;
+  --color-success: #10b981;
+  --color-success-text: #047857;
+  --color-success-border: #a7f3d0;
+
+  --color-warning-soft: #fffbeb;
+  --color-warning: #f99c00;
+  --color-warning-text: #dd7400;
+  --color-warning-border: #fef3c6;
+
+  --color-danger-soft: #fef2f2;
+  --color-danger: #fb2c36;
+  --color-danger-text: #e40014;
+  --color-danger-border: #ffe2e2;
+
+  --color-info-soft: #eff6ff;
+  --color-info: #3080ff;
+  --color-info-text: #155dfc;
+  --color-info-border: #dbeafe;
+
+  /*
+   * The keyboard focus ring. brand-700 rather than legacy's brand-400: at
+   * #34d399 the indicator is 1.9:1 against white and fails WCAG 2.2's 3:1
+   * requirement for a focus appearance. #047857 is 5.6:1 and still unmistakably
+   * the brand. UI_AUDIT.md F9 / U4.
+   */
+  --color-focus: #047857;
+
+  /* ------------------------------------------------------------ typography */
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+
+  /* ----------------------------------------------------------------- radius
+   * DS §6. The rule that reproduces the identity: container = card,
+   * control = pill, field = field, inner block = block, badge = badge.
+   */
+  --radius-card: 1rem; /* rounded-2xl */
+  --radius-block: 0.75rem; /* rounded-xl  */
+  --radius-field: 0.5rem; /* rounded-lg  */
+  --radius-badge: 0.375rem; /* rounded-md  */
+  --radius-control: 9999px; /* rounded-full */
+
+  /* ---------------------------------------------------------------- shadows
+   * DS §8. Legacy is deliberately lopsided: 49 surfaces use `shadow-sm`, two
+   * use `shadow-md` and both of those are hover states. These aliases exist so
+   * that intent is written down and `shadow-lg` never creeps in by habit.
+   */
+  --shadow-card: 0 1px 3px 0 #0000001a, 0 1px 2px -1px #0000001a;
+  --shadow-card-hover: 0 4px 6px -1px #0000001a, 0 2px 4px -2px #0000001a;
+
+  /* -------------------------------------------------------------- container
+   * DS §5.4. The replacement for `main { max-width: 34rem }`, which forced a
+   * 544px column onto tables, grids and admin queues alike (UI_AUDIT.md S4).
+   */
+  --container-form: 24rem; /* auth card                       */
+  --container-narrow: 48rem; /* legal pages, prose              */
+  --container-page: 72rem; /* every landing and app section   */
+  --container-wide: 96rem; /* admin tables and data views     */
+}
+
+/*
+ * Breakpoints and the spacing scale are Tailwind v4's defaults on purpose:
+ * `sm 40rem / md 48rem / lg 64rem / xl 80rem` and `--spacing: 0.25rem` are
+ * exactly what legacy compiled against (DS §5, §22.1), so overriding them
+ * would move every documented value by an unknown amount.
+ */
+
+@layer components {
+  /* ==================================================================== base
+   * Element defaults. Tailwind's Preflight strips headings, lists and form
+   * controls back to nothing; these put the design system back, so a page that
+   * writes plain HTML is already on-system.
+   */
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /*
+   * One focus ring for the whole application.
+   *
+   * `:focus-visible`, not `:focus`, so a mouse click on a button does not draw
+   * it — and unlike legacy, nothing anywhere sets `outline: none`. Legacy's
+   * `outline-none` on every input is the reason the current audit records zero
+   * visible focus states (UI_AUDIT.md U4); it is not reproduced.
+   */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  /*
+   * The skip link's target.
+   *
+   * `<main>` carries `tabindex="-1"` so that activating "Skip to content"
+   * actually moves focus — without it the link updates the URL and leaves focus
+   * on `<body>`, which makes it decoration. Chrome then treats that
+   * programmatic focus as `:focus-visible` and draws the global ring around the
+   * entire content region: a green rule across the page that reads as a stray
+   * border, not as a focus state.
+   *
+   * Suppressed here and **only** here. `main` is not an interactive control and
+   * nobody operates it; the indication a keyboard user needs is on the controls
+   * they tab to next, and those all keep their ring.
+   */
+  main[tabindex='-1']:focus {
+    outline: none;
+  }
+
+  h1,
+  .gm-page-title {
+    font-family: var(--font-display);
+    font-size: 1.875rem;
+    line-height: 2.25rem;
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    color: var(--color-text);
+  }
+
+  h2,
+  .gm-section-title {
+    font-family: var(--font-display);
+    font-size: 1.5rem;
+    line-height: 2rem;
+    font-weight: 700;
+    color: var(--color-text);
+  }
+
+  h3,
+  .gm-card-title {
+    font-size: 1.125rem;
+    line-height: 1.75rem;
+    font-weight: 700;
+    color: var(--color-text);
+  }
+
+  h4 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--color-text);
+  }
+
+  /* The marketing headline. Only the landing page uses it (DS §4.5). */
+  .gm-display {
+    font-family: var(--font-display);
+    font-size: 3rem;
+    line-height: 1.05;
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    color: var(--color-text);
+  }
+
+  @media (width >= 40rem) {
+    .gm-display {
+      font-size: 3.75rem;
+    }
+  }
+
+  .gm-subtitle {
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    color: var(--color-text-secondary);
+  }
+
+  .gm-body {
+    font-size: 0.875rem;
+    line-height: 1.5rem;
+    color: var(--color-text-body);
+  }
+
+  .gm-caption {
+    font-size: 0.75rem;
+    line-height: 1rem;
+    color: var(--color-text-muted);
+  }
+
+  a {
+    color: var(--color-brand-600);
+    font-weight: 600;
+    text-decoration: none;
+    transition: color 150ms ease;
+  }
+
+  a:hover {
+    color: var(--color-brand-700);
+    text-decoration: underline;
+  }
+
+  /* ============================================================== container
+   * The layout primitive. `.gm-container` is the default page column; the
+   * modifiers cover the four widths DS §5.4 records. Padding steps at `sm`
+   * and `lg` exactly as legacy's `px-4 sm:px-6 lg:px-8` does.
+   */
+  .gm-container {
+    width: 100%;
+    max-width: var(--container-page);
+    margin-inline: auto;
+    padding-inline: 1rem;
+  }
+
+  .gm-container--form {
+    max-width: var(--container-form);
+  }
+  .gm-container--narrow {
+    max-width: var(--container-narrow);
+  }
+  .gm-container--wide {
+    max-width: var(--container-wide);
+  }
+  .gm-container--full {
+    max-width: none;
+  }
+
+  @media (width >= 40rem) {
+    .gm-container {
+      padding-inline: 1.5rem;
+    }
+  }
+
+  @media (width >= 64rem) {
+    .gm-container {
+      padding-inline: 2rem;
+    }
+  }
+
+  /* ================================================================= button
+   * DS §9. Five variants on one silhouette: a pill, `font-semibold`, a
+   * `shadow-sm` only when filled.
+   *
+   * `button[type='submit']` rides along so that the forms written before this
+   * phase get the primary button without being touched.
+   *
+   * **`:not(.gm-btn)` is load-bearing, not tidiness.** `button[type='submit']`
+   * is an element+attribute selector at specificity (0,1,1); every modifier
+   * below — `--icon`, `--sm`, `--lg` — is a single class at (0,1,0). Without
+   * the exclusion the fallback outranks them, so a `<Button type="submit">`
+   * silently keeps the default padding: an icon-only submit renders 40px wide
+   * with 20px of padding on each side and its icon squeezed to zero. That is
+   * exactly what happened to the topbar's logout button.
+   */
+  .gm-btn,
+  button[type='submit']:not(.gm-btn) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-control);
+    padding: 0.625rem 1.25rem;
+    font-family: inherit;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .gm-btn:hover,
+  button[type='submit']:not(.gm-btn):hover {
+    text-decoration: none;
+  }
+
+  .gm-btn:disabled,
+  .gm-btn[aria-disabled='true'],
+  button[type='submit']:not(.gm-btn):disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  /*
+   * An icon inside a button is never the thing that gives way. Flex items
+   * shrink by default, and an SVG sized by attribute rather than by style is
+   * the first casualty when a button is squeezed — it collapses to zero width
+   * while keeping its height, which reads as "the icon is missing" rather than
+   * "the layout is tight".
+   */
+  .gm-btn > svg {
+    flex-shrink: 0;
+  }
+
+  /* Primary — pill, brand-500, white (DS §9.1). */
+  .gm-btn--primary,
+  button[type='submit']:not(.gm-btn) {
+    background-color: var(--color-brand-500);
+    color: var(--color-text-inverse);
+    box-shadow: var(--shadow-card);
+  }
+
+  .gm-btn--primary:hover:not(:disabled),
+  button[type='submit']:not(.gm-btn):hover:not(:disabled) {
+    background-color: var(--color-brand-600);
+    color: var(--color-text-inverse);
+  }
+
+  .gm-btn--primary:active:not(:disabled),
+  button[type='submit']:not(.gm-btn):active:not(:disabled) {
+    background-color: var(--color-brand-700);
+  }
+
+  /* Secondary — pill, white, slate border (DS §9.2). */
+  .gm-btn--secondary {
+    background-color: var(--color-surface);
+    border-color: var(--color-border-strong);
+    color: #314158; /* slate-700 */
+  }
+
+  .gm-btn--secondary:hover:not(:disabled) {
+    background-color: var(--color-surface-muted);
+    color: #314158;
+  }
+
+  .gm-btn--secondary:active:not(:disabled) {
+    background-color: var(--color-border);
+  }
+
+  /*
+   * Outline — the brand stated without a fill. Legacy has no such button; it
+   * is added because a secondary call-to-action that still reads as *the*
+   * action has no expression in the legacy set, and the alternative is pages
+   * inventing one each (UI_AUDIT.md F10).
+   */
+  .gm-btn--outline {
+    background-color: transparent;
+    border-color: var(--color-brand-500);
+    color: var(--color-brand-700);
+  }
+
+  .gm-btn--outline:hover:not(:disabled) {
+    background-color: var(--color-brand-50);
+    color: var(--color-brand-700);
+  }
+
+  .gm-btn--outline:active:not(:disabled) {
+    background-color: var(--color-brand-100);
+  }
+
+  /* Ghost — no chrome until hovered. Icon buttons and toolbars (DS §9.6). */
+  .gm-btn--ghost {
+    background-color: transparent;
+    color: var(--color-text-secondary);
+    box-shadow: none;
+  }
+
+  .gm-btn--ghost:hover:not(:disabled) {
+    background-color: var(--color-border);
+    color: var(--color-text);
+  }
+
+  .gm-btn--ghost:active:not(:disabled) {
+    background-color: var(--color-border-strong);
+  }
+
+  /*
+   * Danger — outlined, never filled (DS §9.4). Legacy has no solid red button
+   * anywhere, and the restraint is part of the identity: destructive actions
+   * are legible without shouting.
+   */
+  .gm-btn--danger {
+    background-color: var(--color-danger-soft);
+    border-color: var(--color-danger-border);
+    color: var(--color-danger-text);
+  }
+
+  .gm-btn--danger:hover:not(:disabled) {
+    background-color: #ffe2e2; /* red-100 */
+    color: var(--color-danger-text);
+  }
+
+  .gm-btn--danger:active:not(:disabled) {
+    background-color: #ffc9c9; /* red-200 */
+  }
+
+  .gm-btn--sm {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+  }
+
+  .gm-btn--lg {
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    line-height: 1.5rem;
+  }
+
+  /* Icon-only: a square target, never smaller than 40px (DS §9.6). */
+  .gm-btn--icon {
+    padding: 0;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: var(--radius-control);
+  }
+
+  .gm-btn--icon.gm-btn--sm {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .gm-btn--icon.gm-btn--lg {
+    width: 3rem;
+    height: 3rem;
+  }
+
+  .gm-btn--block {
+    display: flex;
+    width: 100%;
+  }
+
+  /* ================================================================== field
+   * DS §10.1. The focus treatment is the identity detail: the border turns
+   * brand and a 2px brand-100 ring appears outside it. The border colour is
+   * brand-600 rather than legacy's brand-400 for the contrast reason recorded
+   * on `--color-focus`.
+   */
+  .gm-field,
+  input[type='text'],
+  input[type='email'],
+  input[type='password'],
+  input[type='number'],
+  input[type='search'],
+  input[type='tel'],
+  input[type='url'],
+  input[type='date'],
+  input:not([type]),
+  select,
+  textarea {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-field);
+    background-color: var(--color-surface);
+    padding: 0.5rem 0.75rem;
+    font-family: inherit;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    color: var(--color-text);
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .gm-field:focus,
+  input[type='text']:focus,
+  input[type='email']:focus,
+  input[type='password']:focus,
+  input[type='number']:focus,
+  input[type='search']:focus,
+  input[type='tel']:focus,
+  input[type='url']:focus,
+  input[type='date']:focus,
+  input:not([type]):focus,
+  select:focus,
+  textarea:focus {
+    border-color: var(--color-brand-600);
+    box-shadow: 0 0 0 2px var(--color-brand-100);
+  }
+
+  /*
+   * The brand ring replaces the browser outline for **pointer** focus only.
+   *
+   * Legacy drops the outline unconditionally (`outline-none`, DS §10.1), which
+   * is why the audit records zero visible focus states. Scoping the removal to
+   * `:focus:not(:focus-visible)` keeps the legacy look when someone clicks into
+   * a field and keeps the global outline for everyone navigating by keyboard.
+   * Verified over CDP with real Tab presses, not by reading the rule.
+   */
+  .gm-field:focus:not(:focus-visible),
+  input:focus:not(:focus-visible),
+  select:focus:not(:focus-visible),
+  textarea:focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  .gm-field::placeholder,
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  .gm-field:disabled,
+  input:disabled,
+  select:disabled,
+  textarea:disabled {
+    background-color: var(--color-surface-muted);
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
+
+  .gm-field--invalid,
+  [aria-invalid='true'].gm-field,
+  input[aria-invalid='true'],
+  select[aria-invalid='true'],
+  textarea[aria-invalid='true'] {
+    border-color: var(--color-danger);
+  }
+
+  .gm-field--invalid:focus,
+  input[aria-invalid='true']:focus,
+  select[aria-invalid='true']:focus,
+  textarea[aria-invalid='true']:focus {
+    border-color: var(--color-danger);
+    box-shadow: 0 0 0 2px var(--color-danger-border);
+  }
+
+  textarea {
+    min-height: 6rem;
+    resize: vertical;
+  }
+
+  .gm-label,
+  label {
+    display: block;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    font-weight: 500;
+    color: #314158; /* slate-700 */
+  }
+
+  /*
+   * Compatibility with the pages written before this phase, which wrap their
+   * control inside a bare `<label>` (the legacy markup pattern, DS §10.2) and
+   * relied on the old global stylesheet for their rhythm. Scoped to labels
+   * with no class so that Field's labels — which space themselves with a flex
+   * gap — are untouched. Each rule dies as its pages move onto Field.
+   */
+  label:not([class]) {
+    margin-bottom: 1rem;
+  }
+
+  label:not([class]) > input,
+  label:not([class]) > select,
+  label:not([class]) > textarea {
+    margin-top: 0.25rem;
+  }
+
+  .gm-hint {
+    font-size: 0.75rem;
+    line-height: 1rem;
+    color: var(--color-text-muted);
+  }
+
+  .gm-error-text {
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+    color: var(--color-danger-text);
+  }
+
+  /* =================================================================== card
+   * DS §11.1 — used verbatim 30 times in legacy. White, a slate-100 hairline,
+   * `shadow-sm`, `rounded-2xl`. This one rule is most of the visual identity.
+   */
+  .gm-card {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+    padding: 1.25rem;
+  }
+
+  .gm-card--pad-none {
+    padding: 0;
+  }
+  .gm-card--pad-sm {
+    padding: 1rem;
+  }
+  .gm-card--pad-lg {
+    padding: 1.5rem;
+  }
+  .gm-card--pad-xl {
+    padding: 2rem;
+  }
+
+  .gm-card--flat {
+    box-shadow: none;
+  }
+
+  /* Hover lift — legacy uses it on offer and offerwall cards only (DS §8). */
+  .gm-card--interactive {
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .gm-card--interactive:hover {
+    border-color: var(--color-brand-200);
+    box-shadow: var(--shadow-card-hover);
+  }
+
+  /* ================================================================== badge
+   * DS §13.1. `rounded-md` — badges are the least round thing in the UI, a
+   * deliberate contrast against the pills.
+   */
+  .gm-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: var(--radius-badge);
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .gm-badge--brand,
+  .gm-badge--success {
+    background-color: var(--color-brand-50);
+    color: var(--color-brand-700);
+  }
+  .gm-badge--warning {
+    background-color: var(--color-warning-soft);
+    color: var(--color-warning-text);
+  }
+  .gm-badge--error {
+    background-color: var(--color-danger-soft);
+    color: var(--color-danger-text);
+  }
+  .gm-badge--info {
+    background-color: var(--color-info-soft);
+    color: var(--color-info-text);
+  }
+  .gm-badge--neutral {
+    background-color: var(--color-border);
+    color: var(--color-text-body);
+  }
+
+  /*
+   * Extended tones. Not semantic states — legacy uses them to colour-code
+   * offer categories and ledger types (DS §13.2), and the pages that need them
+   * arrive in later phases.
+   */
+  .gm-badge--purple {
+    background-color: #faf5ff;
+    color: #9810fa;
+  }
+  .gm-badge--indigo {
+    background-color: #eef2ff;
+    color: #4f39f6;
+  }
+  .gm-badge--pink {
+    background-color: #fdf2f8;
+    color: #e30076;
+  }
+
+  /* ================================================================== alert
+   * DS §10.3 widened. Legacy has exactly two inline notices, error and
+   * success; warning and info are added from the same recipe because the
+   * admin surfaces in phases 7–9 need them.
+   */
+  .gm-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-field);
+    padding: 0.75rem;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+  }
+
+  .gm-alert--success {
+    background-color: var(--color-success-soft);
+    border-color: var(--color-success-border);
+    color: var(--color-success-text);
+  }
+  .gm-alert--warning {
+    background-color: var(--color-warning-soft);
+    border-color: var(--color-warning-border);
+    color: var(--color-warning-text);
+  }
+  .gm-alert--error {
+    background-color: var(--color-danger-soft);
+    border-color: var(--color-danger-border);
+    color: var(--color-danger-text);
+  }
+  .gm-alert--info {
+    background-color: var(--color-info-soft);
+    border-color: var(--color-info-border);
+    color: var(--color-info-text);
+  }
+
+  .gm-alert__icon {
+    flex-shrink: 0;
+    margin-top: 0.0625rem;
+  }
+
+  .gm-alert__body {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .gm-alert__title {
+    font-weight: 600;
+  }
+
+  /*
+   * `.error` and `.notice` are the class names the pre-existing pages already
+   * use. Mapped onto the alert recipe so those pages become on-system without
+   * being edited.
+   */
+  .error {
+    display: block;
+    border-radius: var(--radius-field);
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+    background-color: var(--color-danger-soft);
+    border: 1px solid var(--color-danger-border);
+    color: var(--color-danger-text);
+  }
+
+  .notice {
+    display: block;
+    border-radius: var(--radius-field);
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+    background-color: var(--color-surface-muted);
+    border: 1px solid var(--color-border-strong);
+    color: var(--color-text-body);
+  }
+
+  /* ================================================================== table
+   * DS §12. One recipe for every table in the product: no header background,
+   * no vertical rules, no zebra striping, separators lighter than the card
+   * border. Bare `table` is included so the three pages that each wrote their
+   * own copy of this CSS can drop it (UI_AUDIT.md F10).
+   */
+  .gm-table-scroll {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .gm-table,
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+  }
+
+  .gm-table th,
+  table th {
+    text-align: left;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    padding: 0 0.5rem 0.75rem 0.5rem;
+    white-space: nowrap;
+  }
+
+  .gm-table td,
+  table td {
+    padding: 0.75rem 0.5rem;
+    vertical-align: top;
+    color: var(--color-text-body);
+  }
+
+  .gm-table tbody tr + tr td,
+  table tbody tr + tr td {
+    border-top: 1px solid var(--color-surface-muted);
+  }
+
+  .gm-table th:first-child,
+  .gm-table td:first-child,
+  table th:first-child,
+  table td:first-child {
+    padding-left: 0;
+  }
+
+  .gm-table th:last-child,
+  .gm-table td:last-child,
+  table th:last-child,
+  table td:last-child {
+    padding-right: 0;
+  }
+
+  /* Numeric columns line up and never wrap (DS §12). */
+  .gm-num,
+  .amount {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* ============================================================ empty state
+   * DS §17.2 — a dashed slate-200 border, centred copy, no illustration.
+   */
+  .gm-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border: 1px dashed var(--color-border-strong);
+    border-radius: var(--radius-card);
+    padding: 3rem 1.5rem;
+    text-align: center;
+  }
+
+  /* ================================================================ loading
+   * Legacy has no spinner and no skeleton at all (DS §25.8); both are designed
+   * here from the token layer. Kept quiet on purpose — a loading state that
+   * flashes is worse than one that waits.
+   */
+  .gm-spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: var(--radius-control);
+    animation: gm-spin 600ms linear infinite;
+  }
+
+  @keyframes gm-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .gm-skeleton {
+    display: block;
+    background-color: var(--color-border);
+    border-radius: var(--radius-field);
+    animation: gm-pulse 1600ms ease-in-out infinite;
+  }
+
+  @keyframes gm-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
+  }
+
+  /* ================================================================== modal
+   * A native `<dialog>`. The browser supplies the focus trap, the Escape key
+   * and the inert background — three accessibility problems that a hand-rolled
+   * modal has to solve and usually solves badly.
+   */
+  .gm-modal {
+    /*
+     * `margin: auto` is what centres a `<dialog>` in the top layer. Preflight
+     * resets every margin to 0, which pins the dialog to the top-left corner —
+     * a bug that only shows up once the dialog is actually opened.
+     */
+    margin: auto;
+    width: min(32rem, calc(100vw - 2rem));
+    max-height: calc(100vh - 4rem);
+    overflow-y: auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    background-color: var(--color-surface);
+    padding: 1.5rem;
+    color: var(--color-text);
+  }
+
+  .gm-modal::backdrop {
+    background-color: #0f172b66;
+  }
+
+  /* ========================================================== legacy rhythm
+   * Tailwind's Preflight removes the browser's default margins, which is right
+   * for a page built from utilities and wrong for the twelve pages that predate
+   * this phase — without it their paragraphs, forms and tables would touch.
+   *
+   * Applied by the shell as an opt-in class, not to `main` itself, so that a
+   * page redesigned in a later phase drops out of it by moving into its own
+   * layout. When the last page has migrated, this block and the class go
+   * together.
+   */
+  .gm-legacy-flow > * + * {
+    margin-top: 1rem;
+  }
+
+  /* ============================================================ screenreader
+   * Visually hidden but announced. Used for icon-only labels and live regions.
+   */
+  .gm-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  /* =========================================================== reduced motion
+   * Every animation in the kit is decorative. Honour the preference rather
+   * than merely slowing things down.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+
+    .gm-spinner {
+      animation: gm-spin 1600ms linear infinite !important;
+    }
+  }
+}

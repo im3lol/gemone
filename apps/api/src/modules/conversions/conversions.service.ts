@@ -522,7 +522,18 @@ export class ConversionsService {
             {
               userId: click.userId,
               amountPoints: rewardPoints,
-              source: { type: REWARD_SOURCE_TYPES.CONVERSION, id: conversionId },
+              /*
+               * The title comes from the click's snapshot, not from the offer
+               * row: the offer will be overwritten by the next catalog sync,
+               * and a statement line must say what the user was actually shown
+               * when they clicked. It is the same value, frozen at the same
+               * moment, as the promise this conversion is settling.
+               */
+              source: {
+                type: REWARD_SOURCE_TYPES.CONVERSION,
+                id: conversionId,
+                label: click.offerTitleSnapshot,
+              },
               holdScopeProviderId: postback.providerId,
               /*
                * A held conversion is credited and never matures (§10.3 step 7):
@@ -650,6 +661,9 @@ export class ConversionsService {
       credit.id,
       'provider reported a chargeback',
       {
+        // No label of its own: a reversal conversion is the same offer seen
+        // again, so `reverse` copies the credit's and the two lines read as
+        // one story.
         source: { type: REWARD_SOURCE_TYPES.CONVERSION, id: reversalConversionId },
       },
       tx,

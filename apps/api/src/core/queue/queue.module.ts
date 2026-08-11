@@ -31,6 +31,18 @@ import { RedisReadinessCheck } from './redis-readiness.check';
       inject: [ENV],
       useFactory: (env: Env) => ({
         connection: { url: env.REDIS_URL },
+
+        /*
+         * The key space these queues own — TODO T81.
+         *
+         * `bull` everywhere except the integration suite, which sets
+         * `QUEUE_PREFIX=bull-test` so that the `worker` container and the
+         * in-process `WorkerModule` the suite boots cannot see each other's
+         * jobs. Before this, they shared every queue on a development machine
+         * and raced for every job.
+         */
+        prefix: env.QUEUE_PREFIX,
+
         defaultJobOptions: {
           /*
            * Exponential backoff, bounded by attempt count (§13.2). A provider

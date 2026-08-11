@@ -301,6 +301,100 @@ describe('payouts (integration)', () => {
     });
   });
 
+  // --- The rules, as the form reads them -----------------------------------
+
+  /**
+   * `GET /payouts/options` exists so the withdrawal form stops guessing. The
+   * shipped page hard-coded `['paypal']` and could show neither the minimum
+   * nor what a point is worth — which is TODO T78, and a contradiction of
+   * PROJECT.md §4.6 besides.
+   *
+   * So what these assert is not that the endpoint returns numbers, but that it
+   * returns *the same* numbers submission enforces. Two readings of one
+   * configuration key that can disagree is the failure worth testing.
+   */
+  describe('the configured options', () => {
+    it('reports the limits, rate and currency an admin set', async () => {
+      await configuration.set(PAYOUTS_MINIMUM_POINTS.key, 2500, { actor: { type: 'system' } });
+      await configuration.set(PAYOUTS_MAXIMUM_POINTS.key, 90_000, {
+        actor: { type: 'system' },
+      });
+      await configuration.set(PAYOUTS_POINTS_PER_CURRENCY_UNIT.key, 250, {
+        actor: { type: 'system' },
+      });
+
+      expect(await payouts.options()).toMatchObject({
+        minimumPoints: 2500,
+        maximumPoints: 90_000,
+        pointsPerCurrencyUnit: 250,
+        currency: 'USD',
+      });
+    });
+
+    it('offers exactly the methods a submission would accept', async () => {
+      const user = await userWithAvailable(20_000);
+
+      await configuration.set(PAYOUTS_ENABLED_METHODS.key, ['paypal', 'monero'], {
+        actor: { type: 'system' },
+      });
+
+      const { methods } = await payouts.options();
+      expect(methods).toEqual(['paypal', 'monero']);
+
+      // Every method the form would offer has to survive the next click.
+      for (const method of methods) {
+        await expect(
+          payouts.submit({ userId: user.id, amountPoints: 5000, method, destination: DESTINATION }),
+        ).resolves.toMatchObject({ method });
+      }
+    });
+
+    it('reports a minimum that the same submission refuses to go under', async () => {
+      const user = await userWithAvailable(20_000);
+      await configuration.set(PAYOUTS_MINIMUM_POINTS.key, 4000, { actor: { type: 'system' } });
+
+      const { minimumPoints } = await payouts.options();
+
+      await expect(
+        payouts.submit({
+          userId: user.id,
+          amountPoints: minimumPoints - 1,
+          method: 'paypal',
+          destination: DESTINATION,
+        }),
+      ).rejects.toMatchObject({ code: ERROR_CODES.PAYOUT_AMOUNT_OUT_OF_RANGE });
+
+      await expect(
+        payouts.submit({
+          userId: user.id,
+          amountPoints: minimumPoints,
+          method: 'paypal',
+          destination: DESTINATION,
+        }),
+      ).resolves.toMatchObject({ amountPoints: minimumPoints });
+    });
+
+    it('quotes the rate a request submitted now would be stamped with', async () => {
+      const user = await userWithAvailable(20_000);
+      await configuration.set(PAYOUTS_POINTS_PER_CURRENCY_UNIT.key, 400, {
+        actor: { type: 'system' },
+      });
+
+      const { pointsPerCurrencyUnit, currency } = await payouts.options();
+      const payout = await submit(user.id, 8000);
+
+      /*
+       * The form multiplies the quoted rate to show "≈ $20.00" before anyone
+       * submits. If that arithmetic and the service's disagreed, the page
+       * would be quoting a price the system does not honour.
+       */
+      const stored = await prisma.payoutRequest.findUniqueOrThrow({ where: { id: payout.id } });
+      expect(stored.pointsPerCurrencyUnit).toBe(pointsPerCurrencyUnit);
+      expect(payout.cashCurrency).toBe(currency);
+      expect(payout.cashAmountMinor).toBe(Math.floor((8000 * 100) / pointsPerCurrencyUnit));
+    });
+  });
+
   // --- The lifecycle -------------------------------------------------------
 
   describe('approve then settle', () => {
@@ -702,6 +796,47 @@ describe('payouts (integration)', () => {
       expect(movements.items.every((m) => m.sourceType === REWARD_SOURCE_TYPES.PAYOUT)).toBe(
         true,
       );
+      await expectBalanced(user.id);
+    });
+
+    /**
+     * D85 applied to withdrawals: the method is recorded on the movement, not
+     * looked up from it. Methods are configuration and one an admin removes
+     * later would otherwise leave a settled withdrawal on the statement with
+     * nothing to say about where the money went.
+     */
+    it('records the method on every movement of one withdrawal', async () => {
+      const user = await userWithAvailable(10_000);
+      const admin = await createAdmin();
+      const payout = await submit(user.id, 5000);
+
+      await adminPayouts.approve(payout.id, undefined, admin);
+      await adminPayouts.settle(payout.id, 'BANK-REF-2', admin);
+
+      const movements = await rewards.findMany({ sourceId: payout.id });
+
+      // The lock and the settle are the same withdrawal; a statement naming the
+      // method on one line and not the next reads as two unrelated events.
+      expect(movements.items.map((m) => m.type).sort()).toEqual([
+        REWARD_TRANSACTION_TYPES.PAYOUT_LOCK,
+        REWARD_TRANSACTION_TYPES.PAYOUT_SETTLE,
+      ]);
+      expect(movements.items.every((m) => m.sourceLabel === 'paypal')).toBe(true);
+    });
+
+    it('keeps the method on the refund when a withdrawal is rejected', async () => {
+      const user = await userWithAvailable(10_000);
+      const admin = await createAdmin();
+      const payout = await submit(user.id, 5000);
+
+      await adminPayouts.reject(payout.id, 'destination did not match the account', admin);
+
+      const movements = await rewards.findMany({ sourceId: payout.id });
+      const refund = movements.items.find(
+        (m) => m.type === REWARD_TRANSACTION_TYPES.PAYOUT_REFUND,
+      );
+
+      expect(refund?.sourceLabel).toBe('paypal');
       await expectBalanced(user.id);
     });
   });

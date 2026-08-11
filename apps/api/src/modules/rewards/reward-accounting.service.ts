@@ -35,6 +35,18 @@ export interface RewardActor {
 export interface RewardSource {
   type: RewardSourceType;
   id?: string | null;
+  /**
+   * What to call it, in the words the user was shown.
+   *
+   * Supplied by the caller and stored verbatim; this module never looks it up
+   * and could not — it depends on no other domain module, and `sourceId`
+   * carries no foreign key on purpose (P2). The caller that moves the points
+   * is the one that knows the name, so it hands it over with them.
+   *
+   * `conversions` passes the click's offer-title snapshot. Everything else
+   * passes nothing, and a statement line without a name is the honest result.
+   */
+  label?: string | null;
 }
 
 export interface CreditInput {
@@ -290,7 +302,16 @@ export class RewardAccountingService {
           pendingDelta: -fromPending,
           availableDelta: -fromAvailable,
           lockedDelta: 0,
-          source: options.source ?? { type: REWARD_SOURCE_TYPES.SYSTEM },
+          /*
+           * The label falls back to the credit's, so a chargeback names the
+           * offer whose points it is taking back. A caller that supplies its
+           * own label still wins — it is describing a different source (the
+           * reversal conversion), and it is the one that knows.
+           */
+          source: {
+            ...(options.source ?? { type: REWARD_SOURCE_TYPES.SYSTEM }),
+            label: options.source?.label ?? original.sourceLabel,
+          },
           sourceTransactionId: original.id,
           actor: options.actor ?? { type: REWARD_ACTOR_TYPES.SYSTEM },
           reason,
@@ -350,7 +371,12 @@ export class RewardAccountingService {
           pendingDelta: -credit.amountPoints,
           availableDelta: credit.amountPoints,
           lockedDelta: 0,
-          source: { type: REWARD_SOURCE_TYPES.SYSTEM },
+          /*
+           * The label rides along from the credit. Without it a maturation
+           * reads "Points cleared" with no indication of *which* points, on a
+           * statement where the credit two rows below names the offer.
+           */
+          source: { type: REWARD_SOURCE_TYPES.SYSTEM, label: credit.sourceLabel },
           sourceTransactionId: credit.id,
           actor: { type: REWARD_ACTOR_TYPES.SYSTEM },
           reason: 'hold period elapsed',
@@ -376,11 +402,17 @@ export class RewardAccountingService {
    * This is the one operation that refuses on insufficient funds, because it is
    * the only one where the user is asking for something rather than being told
    * something happened.
+   *
+   * `options.label` is what the movement is called on a statement — the payout
+   * method, supplied by the caller that knows it, for the reason D85 gives:
+   * methods are configuration and one removed later would leave a settled
+   * withdrawal with nothing to say about where the money went.
    */
   async lock(
     userId: string,
     amountPoints: number,
     payoutId: string,
+    options: { label?: string | null } = {},
     client?: Client,
   ): Promise<RewardTransactionRecord> {
     const amount = requirePositive(amountPoints);
@@ -406,7 +438,7 @@ export class RewardAccountingService {
           pendingDelta: 0,
           availableDelta: -amount,
           lockedDelta: amount,
-          source: { type: REWARD_SOURCE_TYPES.PAYOUT, id: payoutId },
+          source: { type: REWARD_SOURCE_TYPES.PAYOUT, id: payoutId, label: options.label },
           sourceTransactionId: null,
           actor: { type: REWARD_ACTOR_TYPES.USER, id: userId },
           reason: 'withdrawal requested',
@@ -719,7 +751,17 @@ export class RewardAccountingService {
           pendingDelta: 0,
           availableDelta: settling ? 0 : amount,
           lockedDelta: -amount,
-          source: { type: REWARD_SOURCE_TYPES.PAYOUT, id: lockRow.sourceId },
+          /*
+           * The lock's own label, carried forward: a settle and the refund of
+           * a rejection are the same withdrawal as the request that opened it,
+           * and a statement that names the method on one line and not the next
+           * two reads as three unrelated events.
+           */
+          source: {
+            type: REWARD_SOURCE_TYPES.PAYOUT,
+            id: lockRow.sourceId,
+            label: lockRow.sourceLabel,
+          },
           sourceTransactionId: lockRow.id,
           actor: options.actor ?? { type: REWARD_ACTOR_TYPES.SYSTEM },
           reason,
@@ -832,6 +874,7 @@ export class RewardAccountingService {
         lockedDelta: movement.lockedDelta,
         sourceType: movement.source.type,
         sourceId: movement.source.id ?? null,
+        sourceLabel: movement.source.label ?? null,
         sourceTransactionId: movement.sourceTransactionId,
         actorType: movement.actor.type,
         actorId: movement.actor.id ?? null,
@@ -916,6 +959,7 @@ export function toRecord(row: RewardTransaction): RewardTransactionRecord {
     lockedDelta: row.lockedDelta,
     sourceType: row.sourceType as RewardSourceType,
     sourceId: row.sourceId,
+    sourceLabel: row.sourceLabel,
     sourceTransactionId: row.sourceTransactionId,
     actorType: row.actorType,
     actorId: row.actorId,

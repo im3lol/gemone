@@ -1808,6 +1808,358 @@ the first adapter that makes a network call.
 
 ---
 
+## Web (BFF and UI)
+
+### T74 — The app shell and two pages fetch the same endpoints twice
+**Status:** RESOLVED in UI phase 6 · **Raised:** UI phase 2 (application shell)
+
+`(app)/+layout.server.ts` loads `/users/me` and `/rewards/balance` to fill the
+topbar's identity pill (DESIGN_SYSTEM.md §14.3). `/dashboard` already loads
+`/users/me` and `/payouts` already loads `/rewards/balance`, so those two routes
+now call one endpoint twice per navigation.
+
+**Not a correctness problem and not a serial cost:** SvelteKit runs layout and
+page loads concurrently, so the duplicate adds a parallel request, not latency
+on top of an existing one. It is two small authenticated GETs.
+
+Collapsing it means the page reading the value from its parent instead of
+fetching it — which changes what each page's `data` contains and therefore what
+its `+page.svelte` reads. **Deliberately not done in phase 2**, whose whole
+constraint was that no page content changes.
+
+**Trigger:** the phase that redesigns `/dashboard` (phase 4) and `/payouts`
+(phase 6). Each is already rewriting the page's data usage; folding the parent
+value in there costs nothing extra and is the natural moment.
+
+**Half done in phase 4, three quarters in phase 5.**
+`(app)/+layout.server.ts` now returns the whole `Balance` instead of one figure.
+`/dashboard` fetches neither the profile nor the balance, and `/earnings` no
+longer fetches the balance either — it was refetching it on every page of the
+pager. `/payouts` is the last one; it waits for phase 6, as written above.
+
+**Closed in phase 6.** `/payouts` reads `data.balance` from the layout and
+fetches `/rewards/balance` no more. No route in `(app)` now calls an endpoint
+its parent layout already called; the three balance figures on the withdrawal
+screen and the pill in the topbar are one fetch, and a successful submission
+refreshes all four at once through `invalidateAll()`.
+
+---
+
+### T75 — Referrals: the signup card has nowhere to put an invite
+**Status:** open · **Raised:** UI phase 3 (authentication + landing)
+
+DESIGN_SYSTEM.md §19 specifies a referral banner on `/signup?ref=CODE` — "🎁
+You were invited! You'll both start earning together." — and §18/§18.13 give
+referrals a landing-page tile and a footer link. None of it was built in phase
+3, because none of it has anything behind it: `POST /auth/register` takes an
+email and a password, no request shape carries a referral code, and no reward
+rule credits an inviter.
+
+The banner is the visible half of a feature. Rendering it alone would promise
+two people a shared reward that nothing in the system would ever create — which
+is worse than not showing it, because the promise is made at the exact moment
+someone commits to an account.
+
+**Trigger:** a referral feature on the API side. When `register` accepts a code
+and reward accounting can credit an inviter, the banner, the `?ref=` handling
+and the "Referrals" earning tile land together in one change.
+
+---
+
+### T76 — The public site has no legal or support pages
+**Status:** open · **Raised:** UI phase 3 (authentication + landing)
+
+Legacy's footer carries eighteen links across four columns — Platform, Company,
+Support, Legal — of which three resolve (`/terms`, `/privacy`, `/cookies`) and
+fifteen are `href="#"`. Its header adds two more dead ones (Blog, Support), and
+"Earn" carries a chevron with no menu behind it.
+
+Phase 3 shipped the footer with **two** columns, both of them real, and three
+header links that all point at sections of the page. Shipping the other
+fifteen would have meant shipping fifteen links to nowhere — the defect
+UI_AUDIT.md §9 records against legacy's admin sidebar, reproduced on the one
+page every visitor sees first.
+
+What is actually missing is the pages, not the links: terms of service, privacy
+policy, cookie policy, and something to put behind "Support". DESIGN_SYSTEM.md
+§18.14 already specifies the layout for the legal three — a `max-w-3xl` column
+inside the same public frame, `text-4xl` title, prose block — so the frame is
+designed and only the text has to be written.
+
+**Trigger:** whoever writes the policy text. The links go back into
+`landing/content.ts` in the same change; nothing else has to move.
+
+---
+
+### ~~T77 — A ledger row cannot say which offer it came from~~
+**Status:** RESOLVED in UI phase 5 (earnings) · **Raised:** UI phase 4 (dashboard)
+
+`RewardTransactionRecord` carried `sourceType: 'CONVERSION'` and `sourceId` —
+the conversion's id — and no offer title, so the statement could say "Offer
+completed" and nothing more specific.
+
+**Resolved by recording the name at write time, not by resolving it at read
+time.** `reward_transactions` gained one nullable column, `source_label`; the
+contract gained `sourceLabel`; `RewardSource` gained an optional `label` that
+the caller supplies. `conversions` passes `click.offerTitleSnapshot` with the
+credit, and `mature()` / `reverse()` copy it from the transaction they act on,
+so one offer's whole story reads under one name.
+
+**Why not a join, which was the first instinct.** The read would have to go
+`reward_transactions → conversions → clicks`, and the module that owns the
+first table is forbidden from depending on any other domain module — P2, stated
+in `RewardsModule`'s own comment as "deliberately and permanently". Worse,
+`conversions → rewards` is already an arrow in ARCHITECTURE.md §4.1, so the
+reverse is a cycle, not merely a new edge.
+
+**Why not resolve it in the BFF.** There is no user-facing conversions
+endpoint, so it would have needed one built for the purpose, plus a lookup per
+row across the network.
+
+**And a live join would be wrong even where it were allowed.** Offers are
+overwritten by every catalog sync, so `offers.title` is what the offer is
+called *today*, on a line describing money that moved months ago. The snapshot
+is the same value, frozen at the same moment, as the promise the conversion
+settles — the reasoning `clicks.offer_title_snapshot` already encodes. See D85.
+
+Rows written before the column existed keep `null` and show no name. Nothing
+backfills them: the only recoverable title is today's, which is the wrong one.
+
+---
+
+### T78 — No points-to-currency rate is exposed to a user
+**Status:** RESOLVED in UI phase 6 · **Raised:** UI phase 4 (dashboard)
+
+Every balance figure in the legacy design carries a currency equivalent —
+`12,560 Points` above `≈ $12.56 USD` (DESIGN_SYSTEM.md §11.2, §16). Nothing in
+the user-facing API exposes the rate: `/rewards/balance` returns points,
+`/rewards/history` returns points, and the conversion lives in the payout
+service's configuration where only an admin can see it.
+
+The dashboard therefore shows points and no equivalent. That is the correct
+behaviour for now — an invented rate on a balance screen is a number people
+plan around, and being wrong about it is worse than being silent.
+
+**What it needs:** a read of the configured rate on an endpoint a user may
+call. It is a value, not a calculation, and P3 already says the rate is
+configuration rather than code — so the gap is exposure, not arithmetic.
+
+**Trigger:** phase 5 or 6, whichever first shows a figure the user is deciding
+a withdrawal on. The withdrawal form is where the equivalent matters most.
+
+**Resolved in phase 6 (D86).** The wording above — "no public API value
+exposing the rate" — invites inventing one, and there was nothing to invent.
+The rate is `payouts.points_per_currency_unit`, default 1000, and `submit()`
+already reads it on every request and stamps it onto the row (D42). The gap was
+exposure, not arithmetic.
+
+`GET /payouts/options` now returns the methods, the minimum, the maximum, the
+rate and the currency — the read side of configuration that was always the
+source of truth. `/payouts` quotes `≈ $12.50 USD` under the amount as you type,
+using arithmetic that is a deliberate copy of the service's `toCashMinor`
+(integer, rounding down), pinned to it by an integration test so the form
+cannot advertise a price the system does not honour. When the call fails the
+cash line disappears rather than falling back to a rate nobody configured.
+
+**Where it is still not shown.** `/dashboard` and `/earnings` still print points
+with no equivalent. Both could read the same endpoint, and neither was changed
+in phase 6 — this phase's scope was `/payouts`, and adding a call to two other
+pages is a change to two screens that were signed off without it. It is a small
+follow-up, not a gap: the value is now reachable, and the decision of which
+screens quote money is a product one.
+
+---
+
+### T79 — `@gemone/contracts` runtime values cannot be imported by `web`
+**Status:** open · **Raised:** UI phase 4 (dashboard)
+
+The package compiles to CommonJS and re-exports every module through
+`__exportStar`. Rollup cannot trace named *values* through that when bundling
+the SvelteKit SSR output, so
+
+```ts
+import { REWARD_TRANSACTION_TYPES } from '@gemone/contracts';
+```
+
+fails `vite build` with *"REWARD_TRANSACTION_TYPES is not exported by
+../../packages/contracts/dist/index.js"*. Type-only imports are unaffected,
+which is why nothing noticed until now: `web` had never imported a value from
+the package.
+
+**The trap is where it fails.** `svelte-check` resolves it, Vitest resolves it,
+`vite dev` resolves it. Only the production build does not — so it is a lint-
+and test-clean change that breaks the release build, which is the worst place
+for a packaging problem to surface.
+
+**Worked around, not fixed.** `$lib/rewards/ledger.ts` and
+`dashboard/AccountCard.svelte` write the enum members as string literals inside
+`Record<RewardTransactionType, …>` / `Record<UserStatus, …>` maps. The compiler
+still rejects a missing member and a misspelt one, so nothing is less safe —
+it is just less obvious why it is written that way.
+
+**The real fix** is a dual build for the package: `tsc` twice, or `tsup`, with
+an `exports` map giving `import` an ESM entry and `require` the current CJS
+one. `apps/api` and `apps/worker` keep the CJS path unchanged, which is what
+makes it low risk.
+
+**Trigger:** the next phase that wants a contract constant in the browser.
+
+**Re-confirmed and not fixed in phase 5.** The reproduction still holds — a
+one-line probe importing `REWARD_TRANSACTION_TYPES` fails `vite build` with the
+same message while `svelte-check`, Vitest and `vite dev` all resolve it.
+`/earnings` was expected to need the constant for its type filter and turned
+out not to: `LEDGER_TYPES` in `$lib/rewards/ledger.ts` is derived from a
+`Record<RewardTransactionType, …>`, so it *is* the contract's set, checked by
+the compiler, with no runtime import. Changing a package three applications
+build against to avoid an import nothing needs would be the wrong trade.
+
+---
+
+### T80 — The statement cannot filter by status
+**Status:** open · **Raised:** UI phase 5 (earnings)
+
+`/earnings` filters by transaction *type*, because `GET /rewards/history` takes
+`type`, `limit` and `offset` and nothing else. It does not filter by **status**
+— Pending, Available, Cleared, Reversed, In review — and that is the axis a
+user actually asks about ("what is still pending?").
+
+**Status is derived, not stored.** `$lib/rewards/ledger.ts` computes it from
+the transaction's type and its bucket deltas. Filtering it in the browser would
+mean the page fetching twenty rows, hiding some, and printing "1–20 of 28" over
+a list of four — a filter that lies about how much it found. Doing it properly
+means the API expressing the same derivation in a `where` clause.
+
+**Worth thinking about before building.** The derivation is a *view* over the
+type and the deltas, and duplicating it in SQL creates a second definition that
+can drift from the one the UI renders. The cheaper honest option may be to
+expose the two questions people actually ask — "credits still pending" and
+"movements that took points back" — as named filters rather than a general
+status parameter.
+
+**Trigger:** whenever the statement has enough rows for the type filter to stop
+being sufficient, or the first support ticket that asks "which of these is
+still pending".
+
+---
+
+### T81 — The integration suite cannot run while the dev worker is up
+**Status:** RESOLVED in UI phase 8 · **Raised:** UI phase 5 (earnings)
+
+`docker compose up` runs a worker that consumes the same Redis queues and the
+same Postgres database the integration suite uses. Running
+`vitest --project integration` against a live stack therefore has two consumers
+racing for every job: the suite's in-process services and the container.
+
+**It does not fail loudly.** It fails as assertions about *someone else's*
+work — `processingAttempts` is 2 where the test expects 1, and a conversion the
+test just created was already credited by the container running an older image,
+so a new column reads null. Both look exactly like application bugs. This cost
+a debugging cycle in phase 5 before the cause was found; the fix each time is
+`docker compose stop worker`, and with the worker stopped the whole suite (28
+files, 578 tests) passes.
+
+**Options, cheapest first:** a line in the test README; a `pretest:integration`
+that refuses to start when something is already consuming the queue; or a
+per-run queue prefix so the two cannot see each other's jobs. The third is the
+only one that actually removes the category.
+
+**Trigger:** the next time someone loses an hour to it, or CI gaining a job
+that runs integration against a composed stack.
+
+**Hit again in phase 6.** 57 failures across 8 files, all of them assertions
+about work the container had already done. `docker compose stop worker` and the
+same suite passes. Two phases, two debugging detours — this has now cost more
+than the per-run queue prefix would.
+
+**Resolved in phase 8 — the third option, the one that removes the category.**
+
+The root cause is one line of BullMQ configuration: every queue was keyed under
+BullMQ's default prefix, so the `worker` container's `bull:postbacks` and the
+suite's `bull:postbacks` were *the same queue*. Two consumers, one queue, and
+the container usually wins — which is why the symptom was never a queue error
+but an assertion about somebody else's work.
+
+The suite is a consumer, not just a producer: `worker-jobs.spec.ts` boots
+`WorkerModule` in-process precisely to test the jobs only the worker runs.
+That is what made "just don't consume in tests" not an option.
+
+The fix:
+
+- `QUEUE_PREFIX` on the env schema, defaulting to `bull` — BullMQ's own
+  default, so **no deployment changes and no existing queue moves**.
+- `queue.module.ts` passes it to `BullModule.forRootAsync`.
+- `test/integration/setup.ts` sets `QUEUE_PREFIX=bull-test` before the
+  application boots, and clears `bull-test:*` once per file so a crashed run
+  leaves no ghosts.
+
+**Measured, not assumed.** The same suite that produced 57 failures with the
+worker up now passes 28 files / 584 tests **with the worker running** — which
+is the whole point: nothing has to be stopped, and nothing depends on anybody
+remembering to.
+
+What this does *not* isolate is the database. The worker's own scheduled jobs
+— a catalog tick every 60s, an hourly maturation sweep — still read the shared
+development database. No test has ever failed on that, and it is a different
+and much larger change (a second database plus a migration step). Recorded here
+rather than fixed: if a test ever fails in a way that looks like a stray sweep,
+this paragraph is the first place to look.
+
+---
+
+### T82 — `WallOffer` carries a provider slug and no provider name
+**Status:** open · **Raised:** UI phase 7 (offer wall)
+
+Every offer card and the offer detail page attribute the offer to its network,
+which is what a support conversation needs first when somebody says an offer
+did not credit. `WallOffer` carries `providerSlug` and nothing else — the
+display name lives on the `providers` row, which the wall deliberately does not
+join.
+
+So `$lib/offers/offer.ts` title-cases the handle: `mock` → "Mock". That is a
+display transform of a real value rather than an invention, and it is the same
+thing `methodName` does for a payout method. It is also **wrong for the first
+real provider whose name is not a plain word** — `adgem` renders as "Adgem",
+not "AdGem".
+
+**What it needs:** `providerName` on `WallOffer`, populated from
+`providers.display_name` — a column that already exists and is already admin-
+facing. `OfferWallService` resolves the slug from the in-memory registry per
+request (`eligibleProviders()`), so the name is available at the same cost as
+the slug; this is a contract field and a map lookup, not a join.
+
+Not done in phase 7 because that phase changed no API at all, and a wrong
+capitalisation on one caption is not worth being the exception.
+
+**Trigger:** registering the first real provider, or any screen that lists
+providers to a user.
+
+---
+
+### T83 — Points are quoted in money on two screens out of four
+**Status:** open · **Raised:** UI phase 7 (offer wall)
+
+`payouts.points_per_currency_unit` became reachable in phase 6 (D86, closing
+T78) and is now read by `/payouts` and `/offers`, which both quote `≈ $1.71`
+beside a points figure. `/dashboard` and `/earnings` still print points alone.
+
+That is an inconsistency the user notices before anyone else does: the same
+1,715 points is a dollar figure on the wall and a bare number on the statement
+that records having earned it.
+
+**What it needs:** the same `GET /payouts/options` read in those two loads and
+`approxCash` in their components — both already exist, so it is two small
+changes and no new architecture.
+
+**The thing to decide first** is where the rate should live. It is a platform
+economic constant, and it is currently exposed under `/payouts/options` because
+that is the screen that needed it. A third and fourth consumer is the point at
+which "the withdrawal form's options" stops being an honest name for it.
+
+**Trigger:** the phase that revisits `/dashboard`, or the first complaint that
+the numbers do not agree.
+
+---
+
 ## Not yet built (scope, not deferral)
 
 Listed so they are not mistaken for oversights. These are M2+ scope in

@@ -335,8 +335,21 @@ precisely why the table is populated from day one.
 **Carries:** user reference, type (`conversion_credit`, `chargeback_debit`,
 `payout_lock`, `payout_settle`, `payout_refund`, `manual_adjustment`, `bonus`),
 signed amount, affected bucket(s), source reference (conversion, payout, or admin
-action), actor (user / system / admin id), reason, **resolved maturity timestamp
-for credits**, and created-at.
+action), **the source's name as the user was shown it**, actor (user / system /
+admin id), reason, **resolved maturity timestamp for credits**, and created-at.
+
+**On `source_label`.** The offer title for a conversion credit, copied onto the
+maturation and the chargeback that act on it, and null wherever the caller had
+no name to give. It exists because the statement has to say *which* offer paid,
+and there is nothing here to join to: the source reference carries no foreign
+key by design, and the module that owns this table depends on no other domain
+module (P2) — `conversions → rewards` is already an arrow, so the reverse would
+be a cycle. The caller that moves the points supplies the name with them.
+
+A live join would be the wrong answer even where it were possible. Offers are
+overwritten by every catalog sync (§3.2), so it would print today's title on a
+line describing money that moved months ago. This is the promise as it stood,
+the same value and the same reasoning as `clicks.offer_title_snapshot`.
 
 **The maturity timestamp is what makes the hold period honest.** The maturation
 job reads this stored value and never re-resolves configuration, which is what

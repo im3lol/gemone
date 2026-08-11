@@ -2127,3 +2127,493 @@ recipient asked for by clicking. The reset link deliberately does the opposite,
 carrying its token into a form and spending it only when a password is
 submitted, because spending it to render a page would burn the link every time
 a mail client previewed it.
+
+---
+
+## D79 — The web app compiles CSS with Tailwind v4; the tokens are plain CSS variables
+**Phase 1 — design foundation** · goes beyond the approved documents
+
+ARCHITECTURE.md names the web stack down to the adapter and says nothing about
+styling, so the choice was open. `apps/web` had no CSS engine at all: eight
+`<style>` blocks, fourteen hard-coded colours, zero design tokens and zero
+`@media` queries (UI_AUDIT.md F1–F10).
+
+Tailwind v4 was chosen over hand-written CSS for one reason that outweighs P6
+(Simplicity First): **DESIGN_SYSTEM.md is written entirely in Tailwind class
+strings**, because legacy was a Tailwind application. Every recipe in it — the
+card, the pill button, the badge tones, `sm:grid-cols-2 lg:grid-cols-3
+xl:grid-cols-4` — transcribes one-for-one instead of being re-derived by hand
+into media queries in each of the twenty screens still to be built. Re-deriving
+them is precisely the duplication F10 records.
+
+It is also a small commitment: one dev dependency and one Vite plugin, no
+`tailwind.config.js` (v4 has none), and nothing in the runtime image, which
+`adapter-node` bundles from source anyway.
+
+**What keeps it reversible.** The token layer is declared in `@theme` and
+emitted as ordinary CSS custom properties, and every multi-property recipe in
+`app.css` is written as plain CSS against those variables rather than with
+`@apply`. Tailwind supplies layout utilities and breakpoints; it does not
+supply the design system. Removing it would cost the utility classes in
+components, not the tokens or the recipes.
+
+**The value that must not drift.** `--color-brand-500: #10b981`. Legacy
+hard-coded Tailwind **v3**'s emerald scale; v4's own `emerald-500` is `#00bb7f`
+(DESIGN_SYSTEM.md §3.1). The scale is written out literally and `emerald-*` is
+never substituted for it.
+
+---
+
+## D80 — Focus and label markup depart from the documented legacy values, deliberately
+**Phase 1 — design foundation** · amends DESIGN_SYSTEM.md §10.1–10.2 for the rebuild
+
+DESIGN_SYSTEM.md is an extraction of what legacy *did*, and the rebuild
+reproduces it — with two exceptions, recorded here so the divergence from a
+reference document is visible rather than looking like a transcription error.
+
+**1. Legacy sets `outline-none` on every input (§10.1).** It replaces the
+browser outline with a `brand-400` (#34d399) border and a `brand-100` ring.
+Against white that indicator is 1.9:1, below WCAG 2.2's 3:1 for focus
+appearance, and `outline-none` removes the only fallback. The rebuild keeps the
+brand ring for pointer focus, moves the border to `brand-600` (#059669, 3.2:1),
+and adds one global `:focus-visible` outline in `brand-700` that nothing is
+allowed to remove. UI_AUDIT.md records zero visible focus states in the current
+app; this is the rule that fixes it once rather than per component.
+
+**2. Legacy wraps the control inside its `<label>` and emits no `for=`
+(§10.2).** That works for a bare input and stops working the moment a field has
+a hint, an error to announce, or a control that is not an input. `Field.svelte`
+uses explicit `id`/`for` with `aria-describedby` and `aria-invalid` instead.
+The *look* is unchanged; only the wiring is.
+
+Both are the "improve the UX, keep the visual language" side of the phase brief.
+The pages written before this phase still use the legacy wrapping pattern and
+are styled through a `label:not([class])` compatibility rule that dies with them.
+
+---
+
+## D81 — Which shell a route gets is decided by its folder, not by its path
+**Phase 2 — application shell** · goes beyond the approved documents
+
+ARCHITECTURE.md §6.1 describes what `web` *is* — a BFF holding an httpOnly
+cookie — and says nothing about how its routes are organised. Phase 1 left a
+stopgap in the root layout: a list of auth paths and an `admin` prefix, checked
+against `page.url.pathname` to pick a container width. It worked and it did not
+scale — every new route would have had to be remembered in a list somewhere
+other than where the route lives.
+
+`apps/web/src/routes` now has two SvelteKit route groups:
+
+```
+(app)/    dashboard, offers, earnings, payouts      → AppShell
+(auth)/   login, register, forgot/reset, verify     → a 24rem column
+admin/    payout review                             → a holding layout (phase 7)
+```
+
+**Group parentheses never appear in a URL.** `/dashboard` is still `/dashboard`,
+every link and redirect still resolves, and — the part that mattered most —
+`hooks.server.ts`'s `PROTECTED_PREFIXES` still names the same five paths, so
+nothing about who may reach a page changed when the folders did.
+
+**Two consequences worth stating.**
+
+The root `+layout.server.ts` was deleted. Its only output was
+`isAuthenticated`, consumed by the header that no longer lives there; its own
+comment argued against loading a profile in the root layout because that runs on
+public pages too. `(app)/+layout.server.ts` loads the profile and balance the
+topbar needs, in the one place where a shell exists to fill.
+
+`admin/+layout.svelte` is **not** the admin shell of DESIGN_SYSTEM.md §14.4.
+It is a header with the logo, a way back, and logout — what those pages already
+had before the root layout stopped drawing one. The real admin shell arrives in
+phase 7 with the screens it navigates to; a sidebar whose links all lead to
+pages that do not exist is the defect UI_AUDIT.md §9 records against legacy.
+
+---
+
+## D82 — The public page reproduces legacy's design and not its claims
+**Phase 3 — authentication and landing** · goes beyond the approved documents
+
+DESIGN_SYSTEM.md §18 is a faithful extraction of the legacy landing page, and
+three of its nine bands state things about GemOne that are not true of the
+system in this repository:
+
+| Band | Legacy content | What exists |
+|---|---|---|
+| §18.6 partners strip | "Trusted by top offer partners" — AdGem, CPX Research, TOROX, timewall, lootably, ayet studios | `providers/adapters/` contains `mock` |
+| §18.10 testimonials | Three named people, five stars each, "$250+ via PayPal" | no users, no reviews, no payouts |
+| §18.11 stats bar | "30,000+ Active Users · $2M+ Paid to Users · 1M+ Offers Completed · 50+ Reward Options" | none of these figures exist |
+
+Plus the hero's "30,000+ happy users" with its avatar stack and star row
+(§18.4), and the two payment-brand tiles on the phone mockup (§18.5).
+
+**The shapes are reproduced exactly; the contents are replaced.** Same band
+order, same backgrounds, same gradients, same card anatomy — round plate, bold
+heading, body, `border-t` footer row — same dark `rounded-3xl` slab with four
+cells, same faint centred strip. What changed is what those cells say:
+
+- the strip lists the pipeline every provider is put through, which is P1 stated
+  in the shop window rather than a claim about who we have signed;
+- the three cards state what the reward model guarantees (ARCHITECTURE.md
+  §9–§11) instead of quoting people who do not exist;
+- the four figures are properties of the product as built — free to join, six
+  earning categories, three steps, a wall that is not on office hours;
+- the hero's social-proof cluster becomes three statements about how the
+  product works, in the same muted `text-sm` slot;
+- the `PayPal` and `amazon` tiles keep their silhouette, rotation and colour
+  contrast with generic labels. We have no relationship with either company,
+  and another company's wordmark on a marketing page is a claim about them as
+  well as about us.
+
+**Why this is a design decision and not a content edit.** A landing page is the
+one artefact whose job is to make assertions, and an invented user count is not
+"placeholder copy" in the way that lorem ipsum is — it survives into production
+precisely because it looks finished. Legacy's own source comments the phone and
+its props as *"CSS/emoji placeholders, swap for real 3D renders"* and says
+nothing of the sort about the statistics, which is how they were meant to be
+read: as facts. They are not ours to state.
+
+The rule this leaves behind, and the reason it is written here rather than in a
+commit message: **nothing on the public page asserts a fact about GemOne that
+is not true of the system as built.** It is enforced by nothing but this
+paragraph and the note at the top of `landing/content.ts`, so it needs to be
+findable when the testimonials are asked for again.
+
+Two smaller departures in the same spirit, both of them things §18.16 already
+flags as omissions rather than decisions:
+
+- **Dead links are not reproduced.** Legacy's header and footer carry twenty
+  `href="#"` links. The header's three now point at sections of the page and
+  the footer keeps two columns that resolve; the rest wait for the pages
+  (TODO T76).
+- **The mobile menu legacy does not have.** Below `md` legacy hides every nav
+  link and offers no hamburger, so a phone visitor cannot reach any section
+  (§18.3, the same gap §22.3 records in the app). A disclosure button was added
+  — `aria-expanded`, Escape to close, closes on choosing a link — rather than
+  reproducing the gap.
+
+---
+
+## D83 — A dashboard panel that cannot load its data is a panel, not a logout
+**Phase 4 — dashboard** · goes beyond the approved documents
+
+Every page in `web` was written the same way: load everything the page needs in
+parallel, and if *any* call fails, `redirect(303, '/login')`. It is in
+`/dashboard`, `/earnings`, `/payouts` and the offer wall, and the comment on
+each says the same thing — a 401 means the session is finished.
+
+That reasoning is right about 401 and wrong about everything else. A 500 from
+`/rewards/history`, a timeout, a restarted API container — all of them signed
+the user out of a session that was perfectly valid, and did it silently, on a
+page where their balance had already loaded.
+
+The dashboard splits the two apart:
+
+- **The session is the layout's business.** `(app)/+layout.server.ts` loads
+  `/users/me`, and a failure there still redirects. That is the one call whose
+  failure genuinely means "there is no session here".
+- **Everything else is data.** `/rewards/history` resolves a
+  `{ ok: true, items } | { ok: false }` result — never a rejection — and the
+  activity card renders an `ErrorState` inside itself. Balances above it stay
+  on screen, navigation still works, and a refresh is the whole remedy.
+
+**The promise is returned unawaited**, which SvelteKit streams: the shell and
+the balance cards paint as soon as the layout's calls are in, and the list
+fills when the ledger answers. Two things fall out of that.
+
+The first is that the loading state becomes real. Without streaming there is
+nothing to be loading — the server has finished before the first byte, and
+"loading" is a state the code can describe but never enter. Measured with the
+API's history endpoint delayed by six seconds: balances rendered, the region
+carried `aria-busy="true"` and an announcement, five skeleton rows stood in for
+the list, and all of it was replaced when the call returned.
+
+The second is why the result is discriminated rather than thrown. A streamed
+promise that rejects takes the whole page to SvelteKit's error screen —
+throwing away the balances that loaded perfectly well, which is the same defect
+as the redirect wearing different clothes.
+
+**This is not retroactive.** `/earnings`, `/payouts` and the offer wall still
+redirect on any failure. Each is being rewritten in its own phase and each will
+make the same split then; changing them here would mean touching four pages
+this phase was not reviewing.
+
+---
+
+## D84 — The dashboard shows what the system can prove, and drops the rest
+**Phase 4 — dashboard** · goes beyond the approved documents
+
+DESIGN_SYSTEM.md §16 gives the dashboard eight blocks. Five of them are not
+built, and not because of time:
+
+| Legacy block | What is behind it |
+|---|---|
+| Daily bonus card, with its 7-dot streak | no bonus schedule, no streak, no claim |
+| Recommended offers rail | no recommendation of any kind |
+| Achievements teaser | no achievements |
+| Referral card | no referral system (TODO T75) |
+| Level card and XP bar | no levels, no XP |
+
+The four that shipped — the balance row, the activity list, the earnings
+overview and the account panel — are each a direct read of an endpoint that
+exists. The two quick actions go to `/offers` and `/payouts`, both of which
+work today.
+
+**A dashboard is the wrong place to put a promise.** It is the first screen
+after login and the one people learn the product from; a claim button that
+claims nothing teaches them that the buttons here are decorative, which is
+exactly what UI_AUDIT.md §9 records against legacy's eighteen-link admin
+sidebar. The gap is left visible instead — a dashboard with four honest panels
+reads as an early product, which is what it is.
+
+**Two figures are missing rather than approximated.** Legacy prints `≈ $12.56
+USD` under every points value; no user-facing endpoint exposes the rate, so the
+cards show points only (T78). And every activity row says "Offer completed"
+rather than naming the offer, because the ledger record carries a conversion id
+and no title (T77). Both are recorded as API gaps, and neither is filled with a
+plausible-looking guess: a made-up exchange rate on a balance screen is a
+number someone plans a withdrawal around.
+
+**What replaced the missing analytics** is built from figures the API already
+returns: a stacked bar of available / pending / locked with its legend, and the
+three lifetime totals from `/rewards/balance`. Three `<div>`s with percentage
+widths — the phase brief rules out a charting dependency, and a library to draw
+one rectangle would be several hundred kilobytes to say something the data
+already says.
+
+---
+
+## D85 — The statement's offer name is recorded, not resolved
+**Phase 5 — earnings** · goes beyond the approved documents
+
+A statement line has to say *which* offer paid. `reward_transactions` carried
+`source_type` and `source_id` and no name, and TODO T77 recorded the gap
+without proposing a fix, because the obvious fix does not work.
+
+**The obvious fix.** Join `reward_transactions → conversions → clicks` at read
+time and return the click's offer-title snapshot alongside each row. No new
+column, no migration, no denormalisation — everything the phase brief prefers.
+
+**Why it is not available.** The module that owns `reward_transactions` states
+its own constraint in its module comment: *"Depends on no other domain module,
+deliberately and permanently. Everything that moves points calls in; this calls
+nothing back out. That direction is what makes the service replaceable."* And
+`conversions → rewards` is already an arrow in ARCHITECTURE.md §4.1 — so the
+join is not a new dependency, it is a **cycle**, and the boundary lint would
+refuse it. Nest would need `forwardRef`, which is the smell that names the
+problem rather than solving it.
+
+Two other placements were considered and are worse. A new read-side module
+importing both would add a module, a route and a three-table join per page to
+avoid one column. Resolving it in the BFF would need a user-facing conversions
+endpoint built for the purpose, then a lookup per row across the network.
+
+**And the join would be wrong even if it were allowed.** Offers are overwritten
+by every catalog sync (DATABASE.md §3.2). A join to `offers.title` returns what
+the offer is called *today*, printed on a line describing money that moved
+months ago. That is not a smaller version of the right answer; it is a
+different claim.
+
+**So the name travels with the money.** One nullable column, `source_label`;
+one optional field on `RewardSource` that the caller supplies; and
+`conversions` — the module that already knows, because it is holding the click
+— passes `click.offerTitleSnapshot` with the credit. `mature()` and
+`reverse()` copy it from the transaction they act on, so a credit, its
+maturation and its chargeback all read under one offer name instead of the
+statement losing the thread halfway down.
+
+This is denormalisation, and it is the same denormalisation this schema already
+makes three times for the same reason: `clicks.offer_title_snapshot` freezes
+what the user was shown, `conversions` copies `user_id`/`provider_id`/
+`offer_id` off the click, and every conversion stores the *rate* that priced it
+so the number can be explained later. The rule those share is the one this
+follows: **the rule in force at the moment of the event is part of the event.**
+
+Rows written before the column existed keep `null` and render without a name.
+Nothing backfills them, for the reason above — the only title recoverable now
+is the wrong one.
+
+**What it does not fix.** Payout movements and manual adjustments still carry
+no label, because their callers were not changed; a withdrawal line reads
+"Withdrawal requested" with no method beside it. That is a one-line addition in
+`payouts` whenever that screen is rebuilt, and the shape is now there for it.
+
+---
+
+## D86 — The withdrawal form reads its rules from the API, and the rate was never missing
+
+**Context:** UI phase 6 (`/payouts`). Supersedes the "what it does not fix"
+paragraph of [D85](#d85) and closes TODO **T78**.
+
+The shipped withdrawal page held this:
+
+```svelte
+/*
+ * The enabled methods are configuration (P3) and there is no public endpoint
+ * that lists them, so this is the shipped default.
+ */
+const methods = ['paypal'];
+```
+
+Which is a direct contradiction of PROJECT.md §4.6 — *"adding a payment method
+an admin can settle manually requires no deployment"* — written down in the file
+that breaks it. The same page could show neither the minimum a withdrawal
+starts at nor what the points were worth, because `payouts.minimum_points`,
+`payouts.points_per_currency_unit` and `payouts.currency` were readable only
+through `admin/configuration`.
+
+**T78 was never a missing rate.** The audit recorded it as *"no public API value
+exposing the points-to-currency conversion rate"*, and the temptation that
+phrasing invites is to invent one. There was nothing to invent: the rate is
+`payouts.points_per_currency_unit`, it has a default of 1000, `submit()` reads
+it on every request and stamps it onto the row so a payout's cash value stays
+explainable after the rate moves (D42). The gap was **exposure, not
+arithmetic** — the one person the number prices could not see it.
+
+**So: one read-only endpoint, `GET /payouts/options`,** returning the enabled
+methods, the minimum, the maximum, the rate and the currency. It computes
+nothing. It is the read side of settings that were always the source of truth,
+on a surface the person they constrain may call.
+
+Three things follow from that shape, and each was a choice:
+
+- **The methods are filtered by `provider.supports()`.** `submit()` refuses a
+  method the installed payout provider cannot settle, so listing one here would
+  put a choice in a dropdown that the next click rejects. The manual provider
+  supports everything, so today this removes nothing — it is the seam holding
+  for the day an automated provider handles some methods and not others.
+- **The BFF re-implements none of it.** The `min`/`max` attributes on the
+  amount field are a courtesy that saves a round trip; the rule is the
+  service's, and the page works with them ignored. A BFF that re-checked the
+  minimum would be a second copy of a rule an admin thinks they changed in one
+  place, and it would be the copy with no tests over real data.
+- **When the call fails, the form is not rendered.** No methods, no minimum, no
+  rate — nothing honest to build a form out of. The panel says so, and the
+  Available card drops its cash line rather than falling back to a rate nobody
+  configured. An invented rate on a withdrawal screen is a number people decide
+  on.
+
+**Payout movements now carry a `sourceLabel` too**, which is the paragraph D85
+left open. `lock()` takes the method as its label and `resolveLock` copies it
+onto the settle or the refund, so one withdrawal reads under one name from
+request to outcome. The argument is D85's unchanged: methods are configuration,
+and one an admin removes later would otherwise leave a settled withdrawal on the
+statement with nothing to say about where the money went.
+
+**What this is not.** It is not a payout provider. `PAYOUT_PROVIDER` is still
+the manual implementation — an admin reads the destination, sends the money by
+whatever means, and records the reference (ARCHITECTURE.md §11). Nothing in
+this phase moves money, and the interface that would is untouched.
+
+---
+
+## D87 — The offer tile's colour is derived from the offer id
+
+**Context:** UI phase 7 (`/offers`). Answers the blocking dependency
+[UI_AUDIT.md §5.8](UI_AUDIT.md) raised and DESIGN_SYSTEM.md §3.5 named.
+
+Legacy's offer card opens with a solid colour block carrying one white letter,
+and the colour is a per-offer field: `color: string; // hex for the tile`,
+supplied by the provider. §3.5 records the observed values — `#b91c1c` for RAID,
+`#4f46e5` for Sofi, `#059669` for Quick Survey — and then states the problem
+plainly: *"If the current API does not supply one, a deterministic colour must
+be derived, or the tiles all collapse to one colour and the wall loses its
+texture."*
+
+Our `WallOffer` has `imageUrl` and no colour. Three options existed:
+
+**Add `color` to the contract.** Rejected. It would put a colour on
+`NormalizedOffer`, which means every adapter — including ones nobody has
+written — inventing a palette in a provider folder. P1's whole point is that an
+adapter translates a provider's dialect and holds no business rules; a colour
+scheme is not a fact about a campaign, and no real network sends one.
+
+**One colour for every tile.** Rejected for the reason §3.5 gives: a wall of
+identical blocks is a wall you cannot scan.
+
+**Derive it from the id.** Taken. `tileColor` hashes the offer id (FNV-1a) into
+legacy's own eight observed values. Two properties are the whole design:
+
+- **Stable.** The same offer is the same colour on every render, every process,
+  and after a redeploy — it is a hash, not a counter or a random pick. A wall
+  that reshuffled its colours on reload would read as broken.
+- **Decoration only.** Nothing is communicated by which colour appears, so a
+  collision costs nothing and needs no handling. It exists to give the grid
+  texture and for no other purpose.
+
+**The image, when there is one.** `imageUrl` is layered over the colour as a CSS
+background rather than as an `<img>`, and only when it parses as `https:`. Two
+reasons, and the first is not hypothetical: every URL in the mock fixture points
+at `cdn.mock-offers.test`, an unreachable host, so an `<img>` shows the
+browser's broken-image glyph on the majority of cards in development. A
+background that fails to load leaves the colour underneath, which was the design
+anyway. The scheme check is because this is the one field on the wall that
+arrives from outside our system and is rendered as a URL rather than as text.
+
+**What was not derived.** Legacy's card also carries a difficulty badge. There
+is no difficulty in our catalog, and the obvious derivation — expensive means
+hard — is a claim about how long something will take somebody, made from a
+number that says what a provider pays. The badge is absent.
+
+---
+
+## D88 — Queue isolation is a key prefix, not a second Redis
+
+**Context:** UI phase 8. Resolves TODO **T81**, which had cost a debugging
+cycle in phase 5 and opened phase 6 with 57 failing tests.
+
+A development machine runs `docker compose up`, which runs a `worker`
+container. The integration suite runs against the same Postgres and the same
+Redis — deliberately, because ARCHITECTURE.md §18.3 says the parts most likely
+to be wrong are the parts where code meets the database.
+
+**The suite is a consumer, not only a producer.** `worker-jobs.spec.ts` boots
+`WorkerModule` in-process precisely to test the jobs only the worker runs. So
+two processes consumed every queue, and the container usually won.
+
+**It never presented as a queue problem**, which is what made it expensive.
+It presented as assertions about work somebody else had done: a
+`processingAttempts` of 2 where the test expected 1; a conversion the test had
+just created already credited, by a container running an image built before the
+column under test existed, so the column read `null`. Both look exactly like
+application bugs. The workaround — `docker compose stop worker` — is not a
+workaround anyone remembers, and a test suite whose correctness depends on
+remembering something is not isolated.
+
+Three options were on the table:
+
+**A second Redis for tests.** Rejected: a second service to run, configure and
+document, to solve a problem that is one configuration line — and it would not
+have been the *architecture's* answer, since this codebase already namespaces
+Redis by hand (`ow:1:invalidation`, `ow:1:public-throttle:*`).
+
+**A test-only database.** Rejected *for this problem* — the failures were all
+job-stealing, and a second database would not have stopped a single one. It
+remains the answer to a different problem, noted below.
+
+**A queue key prefix.** Taken. BullMQ keys every queue under a prefix, so
+`bull:postbacks` and `bull-test:postbacks` are different queues on one Redis.
+
+- `QUEUE_PREFIX` defaults to `bull`, **which is BullMQ's own default** — so no
+  deployment changes, no migration, and not one existing queue moves. A
+  resolved issue that requires an operator to do something is only half
+  resolved.
+- `test/integration/setup.ts` sets `bull-test` before the application boots,
+  which is the only place it can be set: setup files run before any test file
+  imports `AppModule`, so the env module validates a value already in place.
+- Fixed rather than random. A random prefix per run isolates equally well and
+  leaves a new key space behind every time, with nothing to grep when something
+  does go wrong.
+
+**Verified by measurement, which is the only verification that means anything
+here.** The suite that produced 57 failures with the worker running now passes
+28 files and 584 tests **with the worker running**. Nothing is stopped and
+nothing is remembered.
+
+**What is still shared: the database.** The worker's own scheduled jobs — a
+catalog tick every 60 seconds, an hourly maturation sweep — read the same
+development database the suite uses. No test has ever failed on that, and no
+failure has ever been traced to it. It is left alone deliberately: it needs a
+second database and a migration step, which is the "large infrastructure
+rewrite" this change existed to avoid. T81 records it so the next person to see
+an inexplicable failure starts there.

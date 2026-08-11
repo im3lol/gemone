@@ -138,6 +138,27 @@ export interface RewardTransactionRecord {
 
   sourceType: RewardSourceType;
   sourceId: string | null;
+
+  /**
+   * What to call the source, in the words the user was shown.
+   *
+   * The offer title for a conversion credit — and for the maturation and the
+   * chargeback that act on it, which copy it — so a statement can say "Offer
+   * completed · Quick Survey" instead of "Offer completed" and an opaque id.
+   * Null wherever the caller had no name to give: payout movements and manual
+   * adjustments carry none today.
+   *
+   * **Recorded at write time, never resolved at read time.** `sourceId`
+   * deliberately carries no foreign key (see its column comment), and the
+   * module that owns this table depends on no other domain module — so there
+   * is nothing here to join *to*. Even where a join were possible it would be
+   * the wrong answer: offers are overwritten by every catalog sync, so it
+   * would print today's title on a line describing money that moved months
+   * ago. This is the promise as it stood, the same as the click's own title
+   * snapshot.
+   */
+  sourceLabel: string | null;
+
   /** The transaction this one acts upon — a maturation, a chargeback, a settle. */
   sourceTransactionId: string | null;
 

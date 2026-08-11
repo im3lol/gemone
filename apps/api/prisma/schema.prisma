@@ -902,6 +902,27 @@ model RewardTransaction {
   sourceType String  @map("source_type")
   sourceId   String? @map("source_id")
 
+  /// What to call the source, in the words the user was shown — the offer
+  /// title for a conversion credit, and null wherever the caller had no name
+  /// to give.
+  ///
+  /// **A snapshot, not a lookup, and that is the whole point.** The id above
+  /// carries no foreign key precisely so this module never learns what a
+  /// conversion is; `rewards` depends on no other domain module and must not
+  /// start (P2, and `conversions → rewards` is already an arrow, so the
+  /// reverse would be a cycle). The caller that credits the points knows the
+  /// name and hands it over.
+  ///
+  /// Resolving it live would also be wrong even if it were allowed: offers are
+  /// overwritten by every sync (§3.2), so a join to `offers.title` would show
+  /// what the offer is called *today* on a statement line describing money
+  /// that moved months ago. This holds what was promised at click time — the
+  /// same reasoning, and the same value, as `clicks.offer_title_snapshot`.
+  ///
+  /// A maturation and a chargeback copy it from the credit they act on, so one
+  /// offer's whole story reads under one name.
+  sourceLabel String? @map("source_label")
+
   /// The transaction this one acts upon — the credit a maturation matures, the
   /// credit a chargeback takes back, the lock a settle consumes.
   ///

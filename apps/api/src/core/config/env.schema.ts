@@ -104,6 +104,33 @@ const envSchema = z.object({
     ),
 
   /**
+   * The Redis key prefix every BullMQ queue lives under — TODO T81.
+   *
+   * Two sets of processes reach one Redis on a development machine: the
+   * `worker` container, and the integration suite, which boots `WorkerModule`
+   * in-process for the jobs that only the worker consumes. Sharing a prefix
+   * means sharing queues, and the container wins the race often enough that
+   * the suite fails as assertions about *someone else's* work —
+   * `processingAttempts` of 2 where the test expects 1, a conversion already
+   * credited by a container running an older image. It cost a debugging cycle
+   * in phase 5 and 57 failures in phase 6, every one of them looking like an
+   * application bug.
+   *
+   * A prefix makes the two invisible to each other. `test/integration/setup.ts`
+   * sets this to `bull-test` before the application boots; nothing else does,
+   * so every deployment keeps BullMQ's own default and no existing queue moves.
+   *
+   * Constrained to a slug so the key space stays greppable, and bounded
+   * because a prefix is on the hot path of every queue operation.
+   */
+  QUEUE_PREFIX: z
+    .string()
+    .min(1)
+    .max(32)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'QUEUE_PREFIX must be a lowercase slug')
+    .default('bull'),
+
+  /**
    * Signing key for access tokens (HS256 — ARCHITECTURE.md §8.1).
    *
    * 32 characters minimum. A short secret is brute-forceable offline against

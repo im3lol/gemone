@@ -218,3 +218,45 @@ export interface SettlePayoutRequest {
    */
   externalReference: string;
 }
+
+/**
+ * The rules of the withdrawal form, read from configuration.
+ *
+ * Every field here already existed as a configuration key owned by the
+ * `payouts` module (P3) and was readable by nobody but an admin. That made the
+ * withdrawal form guess at all of it: the shipped page hard-coded
+ * `['paypal']`, which contradicts PROJECT.md §4.6 — *"adding a payment method
+ * an admin can settle manually requires no deployment"* — and it could show
+ * neither the minimum nor what the points are worth.
+ *
+ * So this endpoint calculates nothing and decides nothing. It is the read side
+ * of settings that were always the source of truth, on a surface the person
+ * they constrain is allowed to call.
+ */
+export interface PayoutOptions {
+  /**
+   * The methods a withdrawal may be requested through.
+   *
+   * Ordered as configured, and already narrowed to what the installed payout
+   * provider can settle — offering a choice that submission would refuse is
+   * the one thing a form's dropdown must not do.
+   */
+  methods: string[];
+
+  /** The smallest and largest single withdrawal, in points. */
+  minimumPoints: number;
+  maximumPoints: number;
+
+  /**
+   * Points equal to one unit of `currency` — TODO T78.
+   *
+   * The number that lets a user see what a withdrawal is worth *before*
+   * submitting it, rather than discovering the cash value on the request that
+   * came back. It is the same rate `submit` stamps onto the request, so the
+   * figure the form shows and the figure the payout records agree, unless an
+   * admin changes the rate in between.
+   */
+  pointsPerCurrencyUnit: number;
+  /** ISO-4217, from `payouts.currency`. */
+  currency: string;
+}

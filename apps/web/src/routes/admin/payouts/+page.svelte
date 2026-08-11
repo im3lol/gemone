@@ -1,67 +1,32 @@
-<script lang="ts">
-  let { data } = $props();
+<!--
+  The payout queue — ARCHITECTURE.md §11.3, PROJECT.md §3.3.
 
-  const statuses = ['PENDING_REVIEW', 'APPROVED', 'PAID', 'REJECTED', 'FAILED'];
+  The screen that closes the product loop. Everything before it — offers,
+  clicks, conversions, rewards, the withdrawal form — ends with a request
+  sitting in a queue, and until this page that queue had no screen to be
+  decided on.
+-->
+<script lang="ts">
+  import { PayoutQueue } from '$lib/components/admin';
+  import { PageHeader } from '$lib/components/ui';
+
+  let { data } = $props();
 </script>
 
-<svelte:head><title>Payout queue</title></svelte:head>
+<svelte:head><title>Payout queue · GemOne admin</title></svelte:head>
 
-<h1>Payout queue</h1>
+<div class="flex flex-col gap-5">
+  <PageHeader
+    title="Payouts"
+    description="Withdrawal requests, and the decisions taken on them."
+  />
 
-<nav class="tabs">
-  {#each statuses as status (status)}
-    <a href="/admin/payouts?status={status}" class:active={data.status === status}>{status}</a>
-  {/each}
-</nav>
-
-{#if data.page.items.length === 0}
-  <p class="notice">Nothing in this queue.</p>
-{:else}
-  <table>
-    <thead>
-      <tr><th>When</th><th>Points</th><th>Cash</th><th>Method</th><th></th></tr>
-    </thead>
-    <tbody>
-      {#each data.page.items as payout (payout.id)}
-        <tr>
-          <td>{payout.createdAt.slice(0, 10)}</td>
-          <td class="amount">{payout.amountPoints}</td>
-          <td class="amount">{(payout.cashAmountMinor / 100).toFixed(2)} {payout.cashCurrency}</td>
-          <td>{payout.method}</td>
-          <td><a href="/admin/payouts/{payout.id}">Review</a></td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-{/if}
-
-<style>
-  .tabs {
-    display: flex;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-    flex-wrap: wrap;
-  }
-
-  .tabs .active {
-    font-weight: 600;
-    text-decoration: none;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  th,
-  td {
-    text-align: left;
-    padding: 0.4rem 0.5rem;
-    border-bottom: 1px solid #eee;
-  }
-
-  .amount {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-</style>
+  <PayoutQueue
+    queue={data.queue}
+    now={data.now}
+    status={data.status}
+    offset={data.offset}
+    pageSize={data.pageSize}
+    query={data.query}
+  />
+</div>

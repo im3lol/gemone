@@ -196,6 +196,31 @@ describe('conversion processing (integration)', () => {
       expect(conversion.type).toBe(CONVERSION_TYPES.CONVERSION);
     });
 
+    it('names the credit with the offer title the user was shown at click time', async () => {
+      const user = await createUser();
+      const click = await createClick(user.id);
+      const postback = await deliver({ sub_id: click.subId });
+
+      await conversions.process(postback.id);
+
+      const credit = await prisma.rewardTransaction.findFirstOrThrow({
+        where: { userId: user.id, type: 'CONVERSION_CREDIT' },
+      });
+
+      /*
+       * TODO T77's fix. The statement has to be able to say *which* offer
+       * paid, and `rewards` cannot look it up: it depends on no other domain
+       * module, and `conversions → rewards` is already an arrow (P2). So the
+       * caller hands the name over with the points.
+       *
+       * The value is the click's snapshot, not the offer row. Offers are
+       * overwritten by every catalog sync, so reading `offers.title` later
+       * would print today's title on a line about money that moved months ago.
+       */
+      expect(credit.sourceLabel).toBe(click.offerTitle);
+      expect(credit.sourceLabel).not.toBeNull();
+    });
+
     it('marks the postback processed in the same breath', async () => {
       const user = await createUser();
       const click = await createClick(user.id);
@@ -567,6 +592,22 @@ describe('conversion processing (integration)', () => {
       const after = await prisma.conversion.findUniqueOrThrow({ where: { id: original.id } });
       expect(after.status).toBe(CONVERSION_STATUSES.REVERSED);
       expect(after.rewardPoints).toBe(original.rewardPoints);
+    });
+
+    it('names the chargeback with the same offer as the credit it takes back', async () => {
+      const user = await createUser();
+      const click = await createClick(user.id);
+
+      await conversions.process((await deliver({ sub_id: click.subId })).id);
+      await conversions.process((await deliver({ sub_id: click.subId, reversed: '1' })).id);
+
+      const chargeback = await prisma.rewardTransaction.findFirstOrThrow({
+        where: { userId: user.id, type: 'CHARGEBACK_DEBIT' },
+      });
+
+      // One offer, one name, however many rows its story takes. The reversal
+      // supplies no label of its own, so `reverse` copies the credit's.
+      expect(chargeback.sourceLabel).toBe(click.offerTitle);
     });
 
     it('quarantines a reversal for a conversion we never saw', async () => {
