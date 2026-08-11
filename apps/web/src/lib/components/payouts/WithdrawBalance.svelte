@@ -11,15 +11,21 @@
   available balance dropped after submitting a withdrawal has no other place to
   see where they went.
 
-  The cash line under Available is the resolution of TODO T78 — a real rate
-  from `GET /payouts/options`, not a number invented for the sake of having one.
-  When the options call failed there is no rate, and the line is simply absent.
+  The cash line under each figure is the resolution of TODO T78 — a real rate
+  from configuration, not a number invented for the sake of having one. Since
+  T83 it is read once by `(app)/+layout.server.ts` and the same three captions
+  appear on the dashboard and the statement, so no two screens can quote the
+  same balance differently. When the options call failed there is no rate, and
+  the line is simply absent.
+
+  The card labels already say which bucket each figure is, so the captions
+  carry only the unit and the money.
 -->
 <script lang="ts">
   import type { Balance, PayoutOptions } from '@gemone/contracts';
 
   import { StatCard } from '$lib/components/ui';
-  import { approxCash } from '$lib/payouts/payout';
+  import { pointsUnit } from '$lib/payouts/payout';
   import { formatPoints } from '$lib/rewards/ledger';
 
   type Props = {
@@ -36,9 +42,6 @@
    */
   const show = (points: number | undefined) => (points === undefined ? '—' : formatPoints(points));
 
-  const availableCash = $derived(
-    balance && options ? approxCash(balance.available, options.pointsPerCurrencyUnit, options.currency) : undefined,
-  );
 </script>
 
 <div class="grid gap-4 sm:grid-cols-3">
@@ -47,20 +50,20 @@
     tone="brand"
     label="Available to withdraw"
     value={show(balance?.available)}
-    unit={availableCash ? `points · ${availableCash} ${options?.currency}` : 'points'}
+    unit={pointsUnit(balance?.available, options)}
   />
   <StatCard
     filled
     tone="amber"
     label="Still clearing"
     value={show(balance?.pending)}
-    unit="points, inside the hold period"
+    unit={pointsUnit(balance?.pending, options)}
   />
   <StatCard
     filled
     tone="purple"
     label="Reserved"
     value={show(balance?.locked)}
-    unit="points held by a request"
+    unit={pointsUnit(balance?.locked, options)}
   />
 </div>

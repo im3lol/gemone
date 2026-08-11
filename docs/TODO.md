@@ -2107,7 +2107,7 @@ this paragraph is the first place to look.
 ---
 
 ### T82 — `WallOffer` carries a provider slug and no provider name
-**Status:** open · **Raised:** UI phase 7 (offer wall)
+**Status:** RESOLVED in UI phase 9 · **Raised:** UI phase 7 (offer wall)
 
 Every offer card and the offer detail page attribute the offer to its network,
 which is what a support conversation needs first when somebody says an offer
@@ -2133,10 +2133,25 @@ capitalisation on one caption is not worth being the exception.
 **Trigger:** registering the first real provider, or any screen that lists
 providers to a user.
 
+**Resolved in phase 9, and it cost nothing.** `WallOffer.providerName` carries
+`providers.display_name`. `OfferWallService.eligibleProviders()` already built a
+`Map<providerId, slug>` from the in-memory registry snapshot on every wall
+request — and `ProviderRegistration` is `{ id, slug, displayName, isEnabled }`,
+so the display name was already in the map's source. The map now carries both.
+
+**No join, no second query, no lookup per offer.** The registry exists precisely
+so the wall costs no query on the platform's most requested authenticated read
+(§7.3), and this keeps that true.
+
+`providerSlug` stays: it is the stable handle a support ticket quotes and the
+postback path is named after. The browser-side `providerName()` transform that
+title-cased the slug is deleted — it was the second source of truth, and it was
+wrong for the first provider whose name is not a plain word.
+
 ---
 
 ### T83 — Points are quoted in money on two screens out of four
-**Status:** open · **Raised:** UI phase 7 (offer wall)
+**Status:** RESOLVED in UI phase 9 · **Raised:** UI phase 7 (offer wall)
 
 `payouts.points_per_currency_unit` became reachable in phase 6 (D86, closing
 T78) and is now read by `/payouts` and `/offers`, which both quote `≈ $1.71`
@@ -2157,6 +2172,29 @@ which "the withdrawal form's options" stops being an honest name for it.
 
 **Trigger:** the phase that revisits `/dashboard`, or the first complaint that
 the numbers do not agree.
+
+**Resolved in phase 9**, and the question this entry said to decide first —
+where the rate should live — is answered by *moving the read*, not by moving the
+endpoint.
+
+`(app)/+layout.server.ts` loads `GET /payouts/options` once for the whole group,
+beside the profile and the balance it already loads. All four screens read
+`data.payoutOptions`:
+
+- `/dashboard` and `/earnings` gained the cash caption they were missing;
+- `/offers` and `/payouts` **dropped the calls they were each making** — one
+  value fetched by four pages is exactly the shape T74 spent three phases
+  undoing, and this closes it before it opens.
+
+One helper, `pointsUnit(points, rate)`, builds every caption, so seven figures
+across three components cannot drift into quoting the same balance differently.
+The rate is never defaulted: a failed options call costs the cash half of the
+caption and nothing else (D86).
+
+The endpoint keeps its name. `/payouts/options` reads configuration the payout
+service enforces, and that *is* where the rate is defined — a neutral
+`/config/public` would be a second surface onto one value, which is the problem
+this entry was worried about rather than the fix.
 
 ---
 

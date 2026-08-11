@@ -36,21 +36,17 @@
 
   import { OfferTile } from '$lib/components/offers';
   import { Alert, Badge, Button, Card } from '$lib/components/ui';
-  import {
-    categoryLabel,
-    categoryTone,
-    formatReward,
-    providerName,
-  } from '$lib/offers/offer';
+  import { categoryLabel, categoryTone, formatReward } from '$lib/offers/offer';
   import { approxCash } from '$lib/payouts/payout';
 
   let { data, form } = $props();
 
   const offer = $derived(data.offer);
-  const provider = $derived(providerName(offer.providerSlug));
+  const provider = $derived(offer.providerName);
+  const rate = $derived(data.payoutOptions);
   const cash = $derived(
-    data.rate
-      ? `${approxCash(offer.rewardPoints, data.rate.pointsPerCurrencyUnit, data.rate.currency)} ${data.rate.currency}`
+    rate
+      ? `${approxCash(offer.rewardPoints, rate.pointsPerCurrencyUnit, rate.currency)} ${rate.currency}`
       : null,
   );
 </script>

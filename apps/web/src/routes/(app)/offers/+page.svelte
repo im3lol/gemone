@@ -43,7 +43,7 @@
 
   <OfferWall
     wall={data.wall}
-    rate={data.rate}
+    rate={data.payoutOptions}
     offset={data.offset}
     pageSize={data.pageSize}
     filtered={data.filtered}

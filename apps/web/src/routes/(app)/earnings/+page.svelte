@@ -39,7 +39,7 @@
     {/snippet}
   </PageHeader>
 
-  <BalanceSummary balance={data.balance} />
+  <BalanceSummary balance={data.balance} rate={data.payoutOptions} />
 
   <Statement
     statement={data.statement}

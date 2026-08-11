@@ -32,7 +32,7 @@
 
   import { Badge } from '$lib/components/ui';
   import { approxCash } from '$lib/payouts/payout';
-  import { categoryLabel, categoryTone, formatReward, providerName } from '$lib/offers/offer';
+  import { categoryLabel, categoryTone, formatReward } from '$lib/offers/offer';
 
   import OfferTile from './OfferTile.svelte';
   import type { RewardRate } from './types';
@@ -84,6 +84,6 @@
       <p class="line-clamp-2 text-xs text-text-secondary">{offer.description}</p>
     {/if}
 
-    <p class="gm-caption mt-auto">{providerName(offer.providerSlug)}</p>
+    <p class="gm-caption mt-auto">{offer.providerName}</p>
   </div>
 </a>

@@ -69,7 +69,7 @@
     {/snippet}
   </PageHeader>
 
-  <BalanceGrid balance={data.balance} />
+  <BalanceGrid balance={data.balance} rate={data.payoutOptions} />
 
   <!--
     `xl:grid-cols-[1fr_320px]` is legacy's split (DS §15.5). Below `xl` it is

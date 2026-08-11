@@ -10,8 +10,16 @@
  * and behind it in `payout-state-machine.ts`, which is the authority.
  */
 export { default as PayoutQueue } from './PayoutQueue.svelte';
+export { default as ProviderCard } from './ProviderCard.svelte';
+export { default as ProviderList } from './ProviderList.svelte';
 export { default as QueueTable } from './QueueTable.svelte';
 export { default as ReviewActions } from './ReviewActions.svelte';
+export { default as RegisterProvider } from './RegisterProvider.svelte';
 export { default as ReviewContext } from './ReviewContext.svelte';
 
-export type { QueueResult, ReviewResult } from './types';
+export type {
+  ProviderActionResult,
+  ProviderResult,
+  QueueResult,
+  ReviewResult,
+} from './types';

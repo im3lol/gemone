@@ -21,6 +21,16 @@
   import { Button } from '$lib/components/ui';
 
   let { children } = $props();
+
+  /**
+   * The admin screens that exist. Two, and the list grows with them — a
+   * five-group sidebar whose links lead to pages that do not exist is worse
+   * than none (UI_AUDIT.md AD1).
+   */
+  const SECTIONS = [
+    { href: '/admin/payouts', label: 'Payouts' },
+    { href: '/admin/providers', label: 'Providers' },
+  ];
 </script>
 
 <div class="flex min-h-screen flex-col bg-background">
@@ -32,21 +42,21 @@
       <span class="gm-badge gm-badge--neutral">Admin</span>
 
       <!--
-        One link, because there is one admin screen. This is not the sidebar
-        DS §14.4 specifies and does not pretend to be: a five-group navigation
-        whose links all lead to pages that do not exist is worse than none
-        (UI_AUDIT.md AD1). It grows into one when the screens do.
+        One link per screen that exists. This is not the sidebar DS §14.4
+        specifies and does not pretend to be; it grows into one when there are
+        enough screens to navigate.
       -->
-      <nav aria-label="Admin sections" class="ml-2">
-        <a
-          href="/admin/payouts"
-          aria-current={page.url.pathname.startsWith('/admin/payouts') ? 'page' : undefined}
-          class="gm-btn gm-btn--sm {page.url.pathname.startsWith('/admin/payouts')
-            ? 'gm-btn--secondary'
-            : 'gm-btn--ghost'}"
-        >
-          Payouts
-        </a>
+      <nav aria-label="Admin sections" class="ml-2 flex flex-wrap gap-1">
+        {#each SECTIONS as section (section.href)}
+          {@const active = page.url.pathname.startsWith(section.href)}
+          <a
+            href={section.href}
+            aria-current={active ? 'page' : undefined}
+            class="gm-btn gm-btn--sm {active ? 'gm-btn--secondary' : 'gm-btn--ghost'}"
+          >
+            {section.label}
+          </a>
+        {/each}
       </nav>
 
       <div class="ml-auto flex items-center gap-2">

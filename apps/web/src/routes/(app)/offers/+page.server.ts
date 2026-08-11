@@ -1,12 +1,6 @@
-import type {
-  OfferCategory,
-  Paginated,
-  PayoutOptions,
-  WallOffer,
-  WallOfferSort,
-} from '@gemone/contracts';
+import type { OfferCategory, Paginated, WallOffer, WallOfferSort } from '@gemone/contracts';
 
-import type { RewardRate, WallResult } from '$lib/components/offers';
+import type { WallResult } from '$lib/components/offers';
 import { OFFER_CATEGORIES_IN_ORDER, OFFER_SORTS_IN_ORDER } from '$lib/offers/offer';
 import { apiAuthedJson } from '$lib/server/api';
 import type { PageServerLoad } from './$types';
@@ -28,23 +22,14 @@ const PAGE_SIZE = 12;
  * `redirect(303, '/login')`, so a catalog endpoint having a bad minute logged
  * people out. The session is the layout's business, and the hook's before that.
  *
- * ## The rate is awaited; the wall is not
- *
- * `GET /payouts/options` supplies the points-to-currency rate every card
- * quotes (`≈ $2.45`, DS §17.1). It is awaited because it decides the *shape*
- * of a card rather than its contents, and a cash line appearing a beat after
- * the price it belongs to would be worse than one that was never there.
- *
- * It is also allowed to fail on its own: `rate` becomes `null` and the cash
- * line disappears from every card, rather than falling back to a rate nobody
- * configured. That is D86's rule, applied on the second screen to need it.
- *
  * ## What is not read here
  *
- * The balance. It comes from `(app)/+layout.server.ts` with the rest of the
- * shell (T74), and this page never asks for it.
+ * The balance, and the rate every card quotes `≈ $2.45` from. Both come from
+ * `(app)/+layout.server.ts` with the rest of the shell — the rate joined it in
+ * T83, when the dashboard and the statement needed the same number and four
+ * pages fetching one value would have been T74 all over again.
  */
-export const load: PageServerLoad = async (event) => {
+export const load: PageServerLoad = (event) => {
   const { url } = event;
 
   const search = url.searchParams.get('search')?.trim() ?? '';
@@ -65,17 +50,8 @@ export const load: PageServerLoad = async (event) => {
     result.ok ? { ok: true, items: result.value.items, total: result.value.total } : { ok: false },
   );
 
-  const options = await apiAuthedJson<PayoutOptions>(event, '/payouts/options');
-  const rate: RewardRate = options.ok
-    ? {
-        pointsPerCurrencyUnit: options.value.pointsPerCurrencyUnit,
-        currency: options.value.currency,
-      }
-    : null;
-
   return {
     wall,
-    rate,
     search,
     category,
     sort,

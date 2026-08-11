@@ -48,10 +48,10 @@
     {/snippet}
   </PageHeader>
 
-  <WithdrawBalance balance={data.balance} options={data.options} />
+  <WithdrawBalance balance={data.balance} options={data.payoutOptions} />
 
   <div class="grid gap-5 xl:grid-cols-2 xl:items-start">
-    <WithdrawForm options={data.options} balance={data.balance} result={form} />
+    <WithdrawForm options={data.payoutOptions} balance={data.balance} result={form} />
     <PayoutHistory history={data.history} now={data.now} />
   </div>
 </div>

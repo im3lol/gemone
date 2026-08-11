@@ -35,6 +35,19 @@ export interface UpsertOutcome {
  * this holds the operations that touch rows, so that the policy is readable
  * without wading through Prisma calls and each is testable on its own.
  */
+/**
+ * The two facts the wall needs about the provider behind an offer.
+ *
+ * A structural type rather than `RegisteredProvider`, so this module stays
+ * free of the registry's shape — `offers` owns the catalog and knows nothing
+ * about adapters. `OfferWallService` supplies it from the snapshot it already
+ * holds, which is why the display name costs no query (TODO T82).
+ */
+export interface WallProvider {
+  slug: string;
+  displayName: string;
+}
+
 @Injectable()
 export class OffersService {
   private readonly logger = new Logger(OffersService.name);
@@ -343,10 +356,11 @@ export class OffersService {
    * three that must never appear — see `WallOffer`, and the assertion in
    * `offers-wall.arch.spec.ts` that fails if any of them is referenced here.
    */
-  static toWallOffer(offer: Offer, providerSlug: string): WallOffer {
+  static toWallOffer(offer: Offer, provider: WallProvider): WallOffer {
     return {
       id: offer.id,
-      providerSlug,
+      providerSlug: provider.slug,
+      providerName: provider.displayName,
       title: offer.title,
       description: offer.description,
       requirements: offer.requirements,

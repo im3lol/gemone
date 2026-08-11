@@ -1,5 +1,5 @@
 import { fail, redirect } from '@sveltejs/kit';
-import type { Paginated, PayoutOptions, PayoutSummary } from '@gemone/contracts';
+import type { Paginated, PayoutSummary } from '@gemone/contracts';
 
 import type { PayoutHistoryResult, WithdrawFieldErrors } from '$lib/components/payouts';
 import { apiAuthed, apiAuthedJson, readFailure, type ApiFailure } from '$lib/server/api';
@@ -19,15 +19,15 @@ const HISTORY_LIMIT = 25;
  * TODO T74's duplicate fetch — `/dashboard` gave up its copy in phase 4 and
  * this page kept fetching `/rewards/balance` a second time on every load.
  *
- * ## What it does load, and why the two are treated differently
+ * The **options** — which methods exist, the minimum, the rate — come from
+ * `(app)/+layout.server.ts`, which has loaded them for the whole group since
+ * T83 put the same rate on the dashboard and the statement. This page fetched
+ * them itself until then; one value fetched by four pages is the shape T74
+ * spent three phases undoing.
  *
- * The **options** are awaited: they are the rules of the form — which methods
- * exist, the minimum, the rate — and there is nothing honest to render without
- * them. Rendering a form and filling in its constraints afterwards would mean
- * a moment where someone can type an amount into a field that does not yet
- * know its own limits.
+ * ## What it does load
  *
- * The **history** is streamed (D83) and resolves a result rather than
+ * The **history**, streamed (D83), resolving a result rather than
  * rejecting. A rejected streamed promise takes the whole page to SvelteKit's
  * error screen, and a list endpoint having a bad minute is no reason to
  * withhold a working withdrawal form.
@@ -37,9 +37,7 @@ const HISTORY_LIMIT = 25;
  * back 503 — the same defect phase 5 removed from `/earnings`. The session is
  * the layout's business, and the hook's before that.
  */
-export const load: PageServerLoad = async (event) => {
-  const options = await apiAuthedJson<PayoutOptions>(event, '/payouts/options');
-
+export const load: PageServerLoad = (event) => {
   const history: Promise<PayoutHistoryResult> = apiAuthedJson<Paginated<PayoutSummary>>(
     event,
     `/payouts?limit=${HISTORY_LIMIT}`,
@@ -48,7 +46,6 @@ export const load: PageServerLoad = async (event) => {
   );
 
   return {
-    options: options.ok ? options.value : null,
     history,
     now: nowIso(),
   };

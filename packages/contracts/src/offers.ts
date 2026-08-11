@@ -203,8 +203,26 @@ export interface WallOffer {
    * the first thing a support conversation needs when a user says an offer did
    * not credit. P1 is about code not knowing which provider it is talking to;
    * it has never been about hiding the name from a user.
+   *
+   * The slug stays because it is the stable handle: it is what a support
+   * ticket quotes, what a URL would carry, and what the postback path is named
+   * after. `providerName` below is what a person reads.
    */
   providerSlug: string;
+
+  /**
+   * The provider's name, as an admin set it — `providers.display_name`.
+   *
+   * Resolved from the in-memory registry the wall already consults to decide
+   * which providers are eligible (TODO T82), so it costs **no query and no
+   * join**: the same lookup that produced the slug produces this.
+   *
+   * It exists because a slug is not a name. `adgem` title-cased is "Adgem",
+   * and the alternative to carrying the real one is a map of provider names in
+   * the browser — which is both a second source of truth and precisely the
+   * "code knows which provider it is talking to" that P1 forbids.
+   */
+  providerName: string;
 
   title: string;
   description: string | null;

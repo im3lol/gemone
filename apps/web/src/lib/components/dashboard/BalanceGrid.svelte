@@ -11,13 +11,16 @@
   not a bucket — it answers "has this been worth it", which is a different
   question from "what can I spend".
 
-  ## What is not here
+  ## The cash sub-line
 
-  Legacy's cards carry a `≈ $12.56 USD` sub-line under every points figure. The
-  API exposes no points-to-currency rate to a user — the withdrawal minimum and
-  the conversion are the payout service's business and never reach `/rewards/*`
-  — so there is nothing to compute it from. An invented rate on a balance
-  screen is a number someone would plan around. Recorded as TODO T78.
+  Legacy's cards carry `≈ $12.56 USD` under every points figure, and for four
+  phases this had none: no user-facing endpoint exposed a rate (TODO T78). It
+  does now — `payouts.points_per_currency_unit`, read once by
+  `(app)/+layout.server.ts` for the whole group (T83) — so every bucket quotes
+  the same number from the same source the payout service enforces.
+
+  Points stay the value. The cash is a caption under it, marked `≈`, because
+  the number a user earns and spends is points and the equivalent is context.
 
   ## The unknown balance
 
@@ -34,11 +37,16 @@
   import type { Balance } from '@gemone/contracts';
 
   import { StatCard } from '$lib/components/ui';
+  import { pointsUnit, type PointsRate } from '$lib/payouts/payout';
   import { formatPoints } from '$lib/rewards/ledger';
 
-  type Props = { balance: Balance | null };
+  type Props = {
+    balance: Balance | null;
+    /** The configured rate, or null when the options call failed. */
+    rate: PointsRate;
+  };
 
-  let { balance }: Props = $props();
+  let { balance, rate }: Props = $props();
 
   const show = (points: number | undefined) =>
     points === undefined ? '—' : formatPoints(points);
@@ -48,7 +56,7 @@
   <StatCard
     label="Available"
     value={show(balance?.available)}
-    unit="points"
+    unit={pointsUnit(balance?.available, rate)}
     tone="brand"
     icon={Wallet}
     trend={{ label: 'Ready to withdraw', direction: 'flat', sentiment: 'positive' }}
@@ -57,7 +65,7 @@
   <StatCard
     label="Pending"
     value={show(balance?.pending)}
-    unit="points"
+    unit={pointsUnit(balance?.pending, rate)}
     tone="amber"
     icon={Clock}
     trend={{ label: 'Inside the hold period', direction: 'flat' }}
@@ -66,7 +74,7 @@
   <StatCard
     label="Locked"
     value={show(balance?.locked)}
-    unit="points"
+    unit={pointsUnit(balance?.locked, rate)}
     tone="blue"
     icon={Lock}
     trend={{ label: 'Reserved by a withdrawal', direction: 'flat' }}
@@ -75,7 +83,7 @@
   <StatCard
     label="Total earned"
     value={show(balance?.lifetimeEarned)}
-    unit="points, all time"
+    unit={pointsUnit(balance?.lifetimeEarned, rate, { suffix: ', all time' })}
     tone="purple"
     icon={TrendingUp}
     trend={{ label: 'Since you joined', direction: 'flat' }}

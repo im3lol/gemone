@@ -8,7 +8,7 @@ import {
 
 import { DomainError } from '../../core/errors/app-error';
 import { ProviderRegistry } from '../providers/registry/provider-registry';
-import { OffersService } from './offers.service';
+import { OffersService, type WallProvider } from './offers.service';
 
 /**
  * The offer wall — PROJECT.md §3.2, milestone M2.
@@ -72,33 +72,47 @@ export class OfferWallService {
   async detail(id: string): Promise<WallOffer> {
     const offer = await this.offers.findById(id);
     const eligible = this.eligibleProviders();
-    const slug = offer ? eligible.get(offer.providerId) : undefined;
+    const provider = offer ? eligible.get(offer.providerId) : undefined;
 
-    if (!offer || !offer.isActive || slug === undefined) {
+    if (!offer || !offer.isActive || provider === undefined) {
       throw new DomainError(ERROR_CODES.OFFER_NOT_FOUND, 'Offer not found', 404, { id });
     }
 
-    return OffersService.toWallOffer(offer, slug);
+    return OffersService.toWallOffer(offer, provider);
   }
 
   /**
-   * Provider id → slug, for every provider a click would be accepted for.
+   * Provider id → its public identity, for every provider a click would be
+   * accepted for.
    *
    * From the in-memory registry, so it costs no query on the platform's most
    * requested authenticated read — which is what the registry exists for
    * (§7.3), and what §14.3 now keeps true on every process rather than only on
    * the one an admin happened to reach.
+   *
+   * It carries the **display name as well as the slug** (TODO T82). The
+   * registry snapshot already holds both — `ProviderRegistration` is
+   * `{ id, slug, displayName, isEnabled }` — so a name on every card costs the
+   * same nothing the slug did: no join, no second query, and no lookup per
+   * offer.
    */
-  private eligibleProviders(): Map<string, string> {
-    return new Map(this.registry.enabled().map((provider) => [provider.id, provider.slug]));
+  private eligibleProviders(): Map<string, WallProvider> {
+    return new Map(
+      this.registry
+        .enabled()
+        .map((provider) => [
+          provider.id,
+          { slug: provider.slug, displayName: provider.displayName },
+        ]),
+    );
   }
 }
 
 /**
  * Unreachable in practice — the id came from the eligible set a line earlier.
  *
- * A literal rather than a throw: a slug that cannot be resolved is a cosmetic
- * problem on one card, and failing the whole wall over it would turn a
- * labelling glitch into an empty screen.
+ * A literal rather than a throw: a provider that cannot be resolved is a
+ * cosmetic problem on one card, and failing the whole wall over it would turn
+ * a labelling glitch into an empty screen.
  */
-const UNKNOWN_PROVIDER = 'unknown';
+const UNKNOWN_PROVIDER: WallProvider = { slug: 'unknown', displayName: 'Unknown provider' };

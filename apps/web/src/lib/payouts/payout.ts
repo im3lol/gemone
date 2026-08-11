@@ -156,6 +156,43 @@ export function approxCash(points: number, pointsPerCurrencyUnit: number, curren
 }
 
 /**
+ * What a rate looks like wherever one is quoted — the subset of `PayoutOptions`
+ * every screen that shows money actually reads.
+ *
+ * A structural type, so `PayoutOptions` satisfies it as-is: the layout loads
+ * the whole thing once and each screen passes it straight through. Null when
+ * `GET /payouts/options` failed.
+ */
+export type PointsRate = { pointsPerCurrencyUnit: number; currency: string } | null;
+
+/**
+ * The caption under a points figure — `points` or `points · ≈ $15.40 USD`.
+ *
+ * One function because four screens quote the same thing and they must quote it
+ * identically: the dashboard's four buckets, the statement's three, the wall's
+ * cards and the withdrawal form. Written seven times by hand, one of them would
+ * eventually drift.
+ *
+ * **The rate is never defaulted.** A null one — the options call failed — means
+ * the cash half is simply absent, which is D86's rule: an invented rate on a
+ * balance screen is a number people plan around.
+ *
+ * `points` is optional so the caption can be built for a figure that is unknown
+ * (`—`), where a cash equivalent would be a claim about a number nobody has.
+ */
+export function pointsUnit(
+  points: number | undefined,
+  rate: PointsRate,
+  { suffix = '' } = {},
+): string {
+  const base = `points${suffix}`;
+
+  if (!rate || points === undefined) return base;
+
+  return `${base} · ${approxCash(points, rate.pointsPerCurrencyUnit, rate.currency)} ${rate.currency}`;
+}
+
+/**
  * A quotable handle on one request.
  *
  * The id is a UUIDv7, whose leading characters are a timestamp — two requests

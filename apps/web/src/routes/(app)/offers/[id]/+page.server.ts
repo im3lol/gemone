@@ -1,7 +1,6 @@
 import { error, fail, redirect } from '@sveltejs/kit';
-import type { ClickResponse, PayoutOptions, WallOffer } from '@gemone/contracts';
+import type { ClickResponse, WallOffer } from '@gemone/contracts';
 
-import type { RewardRate } from '$lib/components/offers';
 import { apiAuthed, apiAuthedJson, readFailure } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -20,10 +19,7 @@ import type { Actions, PageServerLoad } from './$types';
 export const load: PageServerLoad = async (event) => {
   const { params } = event;
 
-  const [offer, options] = await Promise.all([
-    apiAuthedJson<WallOffer>(event, `/offers/${params.id}`),
-    apiAuthedJson<PayoutOptions>(event, '/payouts/options'),
-  ]);
+  const offer = await apiAuthedJson<WallOffer>(event, `/offers/${params.id}`);
 
   if (!offer.ok) {
     if (offer.failure.status === 401) redirect(303, `/login?next=/offers/${params.id}`);
@@ -37,14 +33,9 @@ export const load: PageServerLoad = async (event) => {
     error(offer.failure.status === 404 ? 404 : 502, offer.failure.message);
   }
 
-  const rate: RewardRate = options.ok
-    ? {
-        pointsPerCurrencyUnit: options.value.pointsPerCurrencyUnit,
-        currency: options.value.currency,
-      }
-    : null;
-
-  return { offer: offer.value, rate };
+  // The rate comes from `(app)/+layout.server.ts` (T83), so this page reads one
+  // endpoint and no more.
+  return { offer: offer.value };
 };
 
 /**

@@ -40,6 +40,7 @@ one phase at a time.
 | `apps/web/src/lib/payouts/payout.ts` | What a withdrawal state means, and points as money |
 | `apps/web/src/lib/offers/offer.ts` | What an offer category means, and the tile's colour |
 | `apps/web/src/lib/admin/payout-queue.ts` | The queue's vocabulary, and which transitions a state offers |
+| `apps/web/src/lib/admin/providers.ts` | Provider health, sync outcomes, capabilities, intervals |
 | `apps/web/src/routes/dev/ui/` | Visual showcase — development only, 404s in a production build |
 | `apps/web/vite.config.ts` | The Tailwind plugin |
 

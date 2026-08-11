@@ -2617,3 +2617,63 @@ failure has ever been traced to it. It is left alone deliberately: it needs a
 second database and a migration step, which is the "large infrastructure
 rewrite" this change existed to avoid. T81 records it so the next person to see
 an inexplicable failure starts there.
+
+---
+
+## D89 — One rate, loaded once, on the layout
+
+**Context:** UI phase 9. Resolves TODO **T83** and, in passing, TODO **T82**.
+
+Four screens quote what a points figure is worth. Two of them did.
+
+`/offers` and `/payouts` each called `GET /payouts/options` from their own
+`load`, and `/dashboard` and `/earnings` printed points with no equivalent —
+so the same 15,400 points was a dollar figure on the wall and a bare number on
+the statement that recorded earning it.
+
+The obvious fix is to add the call to the two pages missing it. That is also
+the wrong one: it makes four pages fetch one value, which is precisely the
+shape T74 took three phases to undo — a duplicate read of something the shell
+could hold.
+
+**So the read moved up.** `(app)/+layout.server.ts` loads it once, beside the
+profile and the balance it already loads, and returns `payoutOptions`. The two
+pages that were fetching it stopped; the two that were not gained it. Net: one
+call per navigation instead of one or two, and four screens that cannot
+disagree.
+
+`PayoutOptions` structurally satisfies the `{ pointsPerCurrencyUnit, currency }`
+that the quoting screens need, so nothing had to be narrowed or re-wrapped —
+`/payouts` reads the whole thing for its form, and the rest read the two fields
+they care about from the same object.
+
+**One helper builds every caption.** `pointsUnit(points, rate)` returns
+`points` or `points · ≈ $15.40 USD`, and seven figures across three components
+use it. Written by hand seven times, one would eventually round differently or
+drop the currency code.
+
+**The rate is never defaulted, anywhere.** A failed options call means the cash
+half of the caption is absent — not `$0.00`, not a fallback rate. That is D86's
+rule, now applied on four screens instead of one: an invented rate on a balance
+screen is a number people plan around.
+
+### Where the rate lives, which T83 said to decide
+
+It stays on `/payouts/options`. The entry worried that "the withdrawal form's
+options" stops being an honest name once four screens read it — and the honest
+answer is that the rate *is* payout configuration: `payouts.points_per_currency_
+unit` is the key the payout service reads on every submission and stamps onto
+every request (D42). A neutral `/config/public` endpoint would be a second
+surface onto one value, which is the second source of truth this decision
+exists to avoid. The name is slightly narrow; the ownership is exactly right.
+
+### T82, resolved by the same instinct
+
+`WallOffer` carried a slug and no name, so the browser title-cased it — `adgem`
+into "Adgem". The fix was not to ship a map of provider names to the browser,
+which is a second source of truth *and* the "code knows which provider it is
+talking to" that P1 forbids. It was to notice that
+`OfferWallService.eligibleProviders()` already built its map from
+`ProviderRegistration`, which has carried `displayName` all along. The map now
+holds both fields instead of one. No join, no query, no request per offer — and
+the transform in the browser is deleted rather than corrected.

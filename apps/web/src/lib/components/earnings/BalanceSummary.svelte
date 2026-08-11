@@ -19,23 +19,40 @@
   import type { Balance } from '@gemone/contracts';
 
   import { StatCard } from '$lib/components/ui';
+  import { pointsUnit, type PointsRate } from '$lib/payouts/payout';
   import { formatPoints } from '$lib/rewards/ledger';
 
-  type Props = { balance: Balance | null };
+  type Props = {
+    balance: Balance | null;
+    /** The configured rate, or null when the options call failed (T83). */
+    rate: PointsRate;
+  };
 
-  let { balance }: Props = $props();
+  let { balance, rate }: Props = $props();
 
   const show = (points: number | undefined) => (points === undefined ? '—' : formatPoints(points));
 </script>
 
 <div class="grid gap-4 sm:grid-cols-3">
-  <StatCard filled tone="brand" label="Available" value={show(balance?.available)} unit="points" />
-  <StatCard filled tone="amber" label="Pending" value={show(balance?.pending)} unit="points" />
+  <StatCard
+    filled
+    tone="brand"
+    label="Available"
+    value={show(balance?.available)}
+    unit={pointsUnit(balance?.available, rate)}
+  />
+  <StatCard
+    filled
+    tone="amber"
+    label="Pending"
+    value={show(balance?.pending)}
+    unit={pointsUnit(balance?.pending, rate)}
+  />
   <StatCard
     filled
     tone="purple"
     label="Total earned"
     value={show(balance?.lifetimeEarned)}
-    unit="points, all time"
+    unit={pointsUnit(balance?.lifetimeEarned, rate, { suffix: ', all time' })}
   />
 </div>

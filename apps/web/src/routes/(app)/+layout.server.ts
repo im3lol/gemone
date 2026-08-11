@@ -1,5 +1,5 @@
 import { redirect } from '@sveltejs/kit';
-import type { Balance, UserProfile } from '@gemone/contracts';
+import type { Balance, PayoutOptions, UserProfile } from '@gemone/contracts';
 
 import { apiAuthedJson } from '$lib/server/api';
 import type { LayoutServerLoad } from './$types';
@@ -39,11 +39,29 @@ import type { LayoutServerLoad } from './$types';
  * decision the topbar makes: show nothing rather than show a zero. A zero
  * balance and an unfetchable balance are different claims about someone's
  * money.
+ *
+ * ## The rate lives here for the same reason the balance does — TODO T83
+ *
+ * `payoutOptions` carries the points-to-currency rate and the currency, read
+ * from the configuration the payout service enforces (D86). Four screens quote
+ * money — the dashboard, the wall, the statement and the withdrawal form — and
+ * every one of them was going to need it.
+ *
+ * Loading it **once, here** is what keeps that from becoming four fetches of
+ * one value, which is the shape T74 spent three phases undoing. `/offers` and
+ * `/payouts` each used to call `/payouts/options` themselves; they read it from
+ * this layout now.
+ *
+ * It is allowed to fail on its own, and the null is load-bearing again: every
+ * screen drops its cash line rather than falling back to a rate nobody
+ * configured. There is exactly one rate in this application and it is the one
+ * the API enforces — nothing in the browser holds a second.
  */
 export const load: LayoutServerLoad = async (event) => {
-  const [me, balance] = await Promise.all([
+  const [me, balance, payoutOptions] = await Promise.all([
     apiAuthedJson<UserProfile>(event, '/users/me'),
     apiAuthedJson<Balance>(event, '/rewards/balance'),
+    apiAuthedJson<PayoutOptions>(event, '/payouts/options'),
   ]);
 
   if (!me.ok) redirect(303, '/login');
@@ -51,5 +69,6 @@ export const load: LayoutServerLoad = async (event) => {
   return {
     profile: me.value,
     balance: balance.ok ? balance.value : null,
+    payoutOptions: payoutOptions.ok ? payoutOptions.value : null,
   };
 };

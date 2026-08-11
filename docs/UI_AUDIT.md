@@ -776,7 +776,8 @@ thing that must outlive the branch.
 | **6 — Payouts** | Done | `apps/web/src/lib/components/payouts/`, `apps/web/src/lib/payouts/`, `routes/(app)/payouts/`, plus `GET /payouts/options` (D86) |
 | **7 — Offers** | Done | `apps/web/src/lib/components/offers/`, `apps/web/src/lib/offers/`, `routes/(app)/offers/` and `offers/[id]/`, `ui/Pager.svelte`. **No API change** |
 | **8 — Admin payout review** | Done | `apps/web/src/lib/components/admin/`, `apps/web/src/lib/admin/`, `routes/admin/payouts/` and `payouts/[id]/`. **No API change**; plus `QUEUE_PREFIX` (D88, closing T81) |
-| 9–12 | Not started | — |
+| **9 — Providers + MVP consistency** | Done | `routes/admin/providers/`, `$lib/admin/providers.ts`; `WallOffer.providerName` (closing T82); the rate on the `(app)` layout (D89, closing T83) |
+| 10–12 | Not started | — |
 
 Phase 1 closes **F1–F10** (the foundation findings) and supplies the nine
 components §8.1 lists, plus Modal, Spinner, Skeleton and ErrorState from §8.4.
@@ -878,5 +879,25 @@ The admin shell DS §14.4 specifies is still not built, and still deliberately:
 a five-group sidebar whose links lead to pages that do not exist is worse than
 none (AD1). The holding layout gained one link, to the one screen there is.
 
+Phase 9 adds `/admin/providers` and closes the last two consistency debts.
+
+The provider screen takes the operator's first job out of a terminal: every
+phase before it registered the mock provider, enabled it and triggered its
+catalog sync with hand-written API calls, and those three *are* "connect a
+provider". It lists providers with their switch, their health signal and their
+latest sync run's counts, and it distinguishes the three states that look alike
+from the outside — disabled (a decision), down (a signal, deliberately not a
+switch), and no adapter (a build problem, with the registry's own reason).
+
+Nothing on it names a network. It renders a slug, a display name and a set of
+declared capabilities, and would render AdGem and the mock identically — P1
+carried through to the pixels.
+
+**T82** is closed by `WallOffer.providerName`, resolved from the registry
+snapshot the wall already consults, so a name on every card costs the same
+nothing the slug did. **T83** is closed by loading the rate once on the `(app)`
+layout: `/dashboard` and `/earnings` gained the cash caption they lacked, and
+`/offers` and `/payouts` **dropped** the calls they were each making (D89).
+
 Departures from what this audit and DESIGN_SYSTEM.md record are deliberate and
-are logged as [DECISIONS.md](DECISIONS.md) D79–D88.
+are logged as [DECISIONS.md](DECISIONS.md) D79–D89.

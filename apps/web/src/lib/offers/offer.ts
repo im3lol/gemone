@@ -216,27 +216,19 @@ export function tileImage(imageUrl: string | null): string | undefined {
   return `url("${parsed.href.replaceAll('"', '%22')}")`;
 }
 
-/**
- * Which network the offer came from, for a caption under the title.
+/*
+ * There is no `providerName` helper here any more, and that is the fix.
  *
- * **The slug is all we have.** `WallOffer` carries `providerSlug` and no
- * display name — the name lives on the `providers` row, which the wall
- * deliberately does not join. So this title-cases the handle, exactly as
- * `methodName` does for a payout method, and for the same reason: `mock` in
- * lowercase reads as a bug, and a real provider arriving tomorrow still
- * renders as something rather than as nothing.
+ * This module used to title-case the slug — `mock` into "Mock" — because
+ * `WallOffer` carried nothing else, and it was wrong for the first real
+ * provider whose name is not a plain word: `adgem` rendered as "Adgem".
  *
- * It is a display transform, never an identity. Recorded as TODO T82: a
- * `providerName` on `WallOffer` is the correct fix, and it is a contract
- * change this phase did not need.
+ * `WallOffer.providerName` now carries `providers.display_name`, resolved
+ * server-side from the registry snapshot the wall already consults (TODO T82).
+ * A component reads the field. Nothing in the browser holds a list of provider
+ * names, which is both a second source of truth and the "code knows which
+ * provider it is talking to" that P1 forbids.
  */
-export function providerName(slug: string): string {
-  return slug
-    .split(/[-_]/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
 
 /** Points, grouped. The same formatting as the ledger's, for the same numbers. */
 export function formatReward(points: number): string {

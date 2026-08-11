@@ -15,6 +15,12 @@ import { OffersService } from '../../src/modules/offers/offers.service';
 import { ProvidersService } from '../../src/modules/providers/providers.service';
 
 /**
+ * Deliberately not something `'mock'` could be title-cased into — the point of
+ * TODO T82 is that a display name is a stored fact, not a transform of a slug.
+ */
+const PROVIDER_DISPLAY_NAME = 'Mock Offerwall';
+
+/**
  * The offer wall — PROJECT.md §3.2, milestone M2.
  *
  * **The invariant this file exists to hold:** every offer the wall shows is one
@@ -83,7 +89,7 @@ describe('offer wall (integration)', () => {
     await prisma.provider.deleteMany();
     configuration.invalidateAll();
 
-    const provider = await providers.create({ slug: 'mock', displayName: 'Mock Offerwall' });
+    const provider = await providers.create({ slug: 'mock', displayName: PROVIDER_DISPLAY_NAME });
     providerId = provider.id;
     await providers.setEnabled(providerId, true);
     await providers.reload();
@@ -253,11 +259,40 @@ describe('offer wall (integration)', () => {
         'id',
         'imageUrl',
         'isMultiStep',
+        'providerName',
         'providerSlug',
         'requirements',
         'rewardPoints',
         'title',
       ]);
+    });
+
+    /**
+     * TODO T82. The wall used to carry a slug and nothing else, so every
+     * client had to title-case it — `adgem` became "Adgem". The name now comes
+     * from `providers.display_name`, resolved from the registry snapshot the
+     * wall already consults.
+     */
+    it('names the provider as an admin named it, not as its slug', async () => {
+      const user = await createUser();
+      const { body } = await get(user, '/offers').expect(200);
+
+      for (const offer of body.items) {
+        expect(offer.providerSlug).toBe('mock');
+        // The row's display name, which the fixture sets to something a slug
+        // could not be title-cased into.
+        expect(offer.providerName).toBe(PROVIDER_DISPLAY_NAME);
+        expect(offer.providerName).not.toBe(offer.providerSlug);
+      }
+    });
+
+    it('names the provider on the detail view too', async () => {
+      const user = await createUser();
+      const [first] = (await get(user, '/offers').expect(200)).body.items;
+      const { body } = await get(user, `/offers/${first.id}`).expect(200);
+
+      expect(body.providerName).toBe(PROVIDER_DISPLAY_NAME);
+      expect(body.providerSlug).toBe('mock');
     });
   });
 

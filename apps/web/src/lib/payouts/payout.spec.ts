@@ -8,6 +8,7 @@ import {
   methodName,
   payoutReference,
   payoutState,
+  pointsUnit,
 } from './payout';
 
 /** Every status the contract has. Written out for the reason `payout.ts` gives. */
@@ -119,5 +120,42 @@ describe('payoutReference', () => {
     expect(a).toBe('AAAA1111');
     expect(b).toBe('AAAA2222');
     expect(a).not.toBe(b);
+  });
+});
+
+describe('pointsUnit', () => {
+  const rate = { pointsPerCurrencyUnit: 1000, currency: 'USD' };
+
+  it('quotes the cash equivalent beside the unit', () => {
+    expect(pointsUnit(15_400, rate)).toBe('points · ≈ $15.40 USD');
+  });
+
+  it('keeps a caller-supplied suffix in front of the money', () => {
+    expect(pointsUnit(15_400, rate, { suffix: ', all time' })).toBe(
+      'points, all time · ≈ $15.40 USD',
+    );
+  });
+
+  it('says only "points" when there is no rate', () => {
+    // D86's rule: an invented rate on a balance screen is a number people plan
+    // around. A failed options call costs the cash line, not correctness.
+    expect(pointsUnit(15_400, null)).toBe('points');
+    expect(pointsUnit(15_400, null, { suffix: ', all time' })).toBe('points, all time');
+  });
+
+  it('says only "points" for a figure nobody has', () => {
+    // The card renders `—` for an unfetchable balance; a cash equivalent of an
+    // unknown number would be a claim about it.
+    expect(pointsUnit(undefined, rate)).toBe('points');
+  });
+
+  it('quotes zero rather than hiding it', () => {
+    expect(pointsUnit(0, rate)).toBe('points · ≈ $0.00 USD');
+  });
+
+  it('uses whatever currency is configured, not a hard-coded one', () => {
+    expect(pointsUnit(5000, { pointsPerCurrencyUnit: 250, currency: 'EUR' })).toBe(
+      'points · ≈ €20.00 EUR',
+    );
   });
 });

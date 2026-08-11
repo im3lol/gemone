@@ -6,6 +6,13 @@ import { OffersService } from './offers.service';
 import type { Offer } from '../../generated/prisma/client';
 
 /**
+ * The provider identity `toWallOffer` is handed, which since TODO T82 is the
+ * slug *and* the display name — both resolved from the registry snapshot the
+ * wall already holds, so neither costs a query.
+ */
+const MOCK_PROVIDER = { slug: 'mock', displayName: 'Mock Offerwall' };
+
+/**
  * The wall must never show a user what a provider pays us.
  *
  * ARCHITECTURE.md §4.4, mechanism 3 — the same shape as
@@ -81,7 +88,7 @@ describe('the wall serialiser', () => {
       updatedAt: new Date(0),
     } as unknown as Offer;
 
-    const wall = OffersService.toWallOffer(row, 'mock');
+    const wall = OffersService.toWallOffer(row, MOCK_PROVIDER);
     const keys = Object.keys(wall);
 
     for (const field of FORBIDDEN) {
@@ -116,9 +123,10 @@ describe('the wall serialiser', () => {
       trackingUrlTemplate: 'x',
     } as unknown as Offer;
 
-    expect(OffersService.toWallOffer(row, 'mock')).toEqual({
+    expect(OffersService.toWallOffer(row, MOCK_PROVIDER)).toEqual({
       id: '0192f0a0-0000-7000-8000-0000000000a1',
       providerSlug: 'mock',
+      providerName: 'Mock Offerwall',
       title: 'Reach level 10',
       description: 'A game',
       requirements: 'Install and reach level 10',

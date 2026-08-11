@@ -8,7 +8,6 @@ import {
   categoryLabel,
   categoryTone,
   formatReward,
-  providerName,
   sortLabel,
   tileColor,
   tileImage,
@@ -138,18 +137,6 @@ describe('tileImage', () => {
     expect(escaped?.startsWith('url("')).toBe(true);
     expect(escaped?.endsWith('")')).toBe(true);
     expect(escaped).toContain('%22');
-  });
-});
-
-describe('providerName', () => {
-  it('title-cases the slug, which is all the wall carries', () => {
-    expect(providerName('mock')).toBe('Mock');
-    expect(providerName('offer_toro')).toBe('Offer Toro');
-    expect(providerName('ad-gem')).toBe('Ad Gem');
-  });
-
-  it('never returns an empty caption', () => {
-    expect(providerName('unknown')).toBe('Unknown');
   });
 });
 
