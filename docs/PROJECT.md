@@ -797,7 +797,8 @@ and a real payout has been sent.
 
 ## 8. Key Architectural Decisions
 
-Recorded here in summary; each becomes an ADR in `docs/adr/` during M1.
+Recorded here in summary; each is expanded in `docs/DECISIONS.md`, which is
+where the running decision log actually lives.
 
 **Why NestJS** — the adapter architecture is the project's central constraint,
 and NestJS's module system and dependency injection make that boundary

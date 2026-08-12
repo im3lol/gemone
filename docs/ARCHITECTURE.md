@@ -177,7 +177,7 @@ gemone/
 ├── docs/
 │   ├── PROJECT.md
 │   ├── ARCHITECTURE.md
-│   └── adr/                    # One file per non-obvious decision
+│   └── DECISIONS.md            # One entry per non-obvious decision
 │
 ├── docker-compose.yml          # Local development
 ├── docker-compose.prod.yml     # Production
