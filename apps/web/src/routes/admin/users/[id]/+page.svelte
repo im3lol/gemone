@@ -4,16 +4,23 @@
   ```
   ← Users
   someone@example.com                          Active · User
-  ┌──────────────────────────┬──────────────────────────────┐
-  │ Standing                 │ Fraud signals                │
-  │ suspend / ban / close    │ Withdrawals · Conversions    │
-  │ end sessions             │ Administrative history       │
-  └──────────────────────────┴──────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────┐
+  │ Balance · available / pending / reserved                 │
+  ├──────────────────────────┬───────────────────────────────┤
+  │ Standing                 │ Fraud signals                 │
+  │ suspend / ban / close    │ Withdrawals · Conversions     │
+  │ end sessions             │ Administrative history        │
+  └──────────────────────────┴───────────────────────────────┘
   ```
 
   The decisions on the left, the evidence on the right, and at `xl` they sit
   side by side so an operator does not have to remember one while scrolling to
   the other.
+
+  The balance spans both columns above them (T84). It belongs to neither: it is
+  not a decision, and it is not one panel of activity among four — it is the
+  fact an operator is most often on this page to read, and every decision below
+  is taken with it in view.
 
   `data.admin` comes from `admin/+layout.server.ts`, which already loaded the
   signed-in administrator to decide whether to render these screens at all. The
@@ -23,7 +30,7 @@
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 
-  import { UserAccountActivity, UserActions } from '$lib/components/admin';
+  import { UserAccountActivity, UserActions, UserBalance } from '$lib/components/admin';
   import { Badge, Button, PageHeader } from '$lib/components/ui';
   import { isSelf, roleLabel, userState } from '$lib/admin/users';
   import { absoluteDate } from '$lib/rewards/ledger';
@@ -91,6 +98,8 @@
       <dd class="font-medium text-text">{account.registrationCountry ?? 'Unknown'}</dd>
     </div>
   </dl>
+
+  <UserBalance balance={data.balance} />
 
   <div class="grid gap-5 xl:grid-cols-2">
     <div class="min-w-0">

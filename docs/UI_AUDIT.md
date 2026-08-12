@@ -971,5 +971,16 @@ miscount — `overrideCount` had been every stored row rather than the
 provider-scoped ones the contract documents, so one override plus a global value
 read as "2 providers".
 
+Phase 13 closes **T84**, the last figure `/admin/users/[id]` was missing.
+`GET /admin/users/:id/balance` returns the accounting service's own answer
+unchanged — the same call the payout review context has always made, now
+reachable for an account that has never requested a withdrawal. Nothing sums the
+conversions on the page into a total: that ignores maturation, chargebacks and
+locks, and a number on an admin screen that disagrees with the ledger is worse
+than no number, which is why phase 11 shipped without one. The screen shows the
+three buckets and never a fourth — `total` exists so nobody adds them up wrongly,
+not so an operator can confirm a withdrawal against points still inside a hold
+period (D99).
+
 Departures from what this audit and DESIGN_SYSTEM.md record are deliberate and
-are logged as [DECISIONS.md](DECISIONS.md) D79–D98.
+are logged as [DECISIONS.md](DECISIONS.md) D79–D99.

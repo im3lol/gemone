@@ -1,10 +1,12 @@
-import { USER_ROLES, USER_STATUSES } from '@gemone/contracts';
+import { USER_ROLES, USER_STATUSES, type Balance } from '@gemone/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
   USER_ROLES_IN_ORDER,
   USER_STATUSES_IN_ORDER,
+  balanceBuckets,
   isSelf,
+  lifetimeFigures,
   roleLabel,
   shortId,
   statusChangesFor,
@@ -114,5 +116,89 @@ describe('shortId', () => {
 
   it('leaves anything already short alone', () => {
     expect(shortId('abc123')).toBe('abc123');
+  });
+});
+
+/**
+ * The balance panel — TODO T84.
+ *
+ * The whole risk this feature carries is that a number appears on an admin
+ * screen which disagrees with the ledger. So what is worth testing is not the
+ * formatting: it is that every figure shown is *read* from the accounting
+ * service's answer, that the three buckets stay three, and that an absent
+ * balance never becomes a zero somebody reads as evidence.
+ */
+const BALANCE: Balance = {
+  pending: 3_000,
+  available: 12_400,
+  locked: 5_000,
+  total: 20_400,
+  lifetimeEarned: 25_400,
+  lifetimeWithdrawn: 4_000,
+  lifetimeReversed: 1_000,
+};
+
+describe('balanceBuckets', () => {
+  it('is the three buckets ARCHITECTURE.md §9.2 names, in that order', () => {
+    expect(balanceBuckets(BALANCE).map((bucket) => bucket.key)).toEqual([
+      'available',
+      'pending',
+      'locked',
+    ]);
+  });
+
+  it('reads each figure from the balance rather than deriving one', () => {
+    const points = Object.fromEntries(
+      balanceBuckets(BALANCE).map((bucket) => [bucket.key, bucket.points]),
+    );
+
+    expect(points).toEqual({ available: 12_400, pending: 3_000, locked: 5_000 });
+  });
+
+  it('never presents `total` as a fourth bucket', () => {
+    /*
+     * It is on the contract so nobody adds the three up wrongly — not so it
+     * can sit beside them. An operator confirming a withdrawal against a
+     * total would be confirming it against points still inside a hold period.
+     */
+    const keys = balanceBuckets(BALANCE).map((bucket) => bucket.key);
+
+    expect(keys).not.toContain('total');
+    expect(keys).toHaveLength(3);
+  });
+
+  it('says what each bucket means, because the three are answers to different questions', () => {
+    for (const bucket of balanceBuckets(BALANCE)) {
+      expect(bucket.label).not.toBe('');
+      expect(bucket.hint).not.toBe('');
+    }
+  });
+
+  it('leaves the points undefined when there is no balance, never zero', () => {
+    // A zero balance and an unfetchable balance are different claims, and on
+    // this screen the wrong one would be read as evidence about the account.
+    for (const bucket of balanceBuckets(null)) {
+      expect(bucket.points).toBeUndefined();
+    }
+  });
+
+  it('keeps a real zero visible', () => {
+    const empty = balanceBuckets({ ...BALANCE, available: 0 });
+
+    expect(empty.find((bucket) => bucket.key === 'available')?.points).toBe(0);
+  });
+});
+
+describe('lifetimeFigures', () => {
+  it('reads the three lifetime totals the accounting service already exposes', () => {
+    expect(
+      Object.fromEntries(lifetimeFigures(BALANCE).map((f) => [f.key, f.points])),
+    ).toEqual({ lifetimeEarned: 25_400, lifetimeWithdrawn: 4_000, lifetimeReversed: 1_000 });
+  });
+
+  it('is unknown rather than zero when the balance could not be loaded', () => {
+    for (const figure of lifetimeFigures(null)) {
+      expect(figure.points).toBeUndefined();
+    }
   });
 });

@@ -3,6 +3,7 @@ import {
   USER_ROLES,
   type AdminUserSummary,
   type AuditLogEntry,
+  type Balance,
   type Paginated,
 } from '@gemone/contracts';
 import type { Request } from 'express';
@@ -46,6 +47,25 @@ export class AdminController {
     @Param('id', createUuidPipe()) id: string,
   ): Promise<AdminUserSummary> {
     return this.adminUsers.get(id);
+  }
+
+  /**
+   * One account's three buckets — TODO T84.
+   *
+   * `GET /rewards/balance` is the owner's own and takes no parameter at all,
+   * because ownership is never something a caller supplies (§6.2). This is the
+   * administrative read of the same figures, and it lives under `users/:id`
+   * rather than under `rewards` for that reason: the resource is the account,
+   * and the account is what the role check and the audit trail are about.
+   *
+   * Returns `Balance` verbatim — the accounting service's own shape, including
+   * the lifetime totals, which are the figures that answer "has this account
+   * ever been paid" without opening the payout queue. Nothing is reshaped for
+   * the admin, so there is no admin-only definition of a balance to drift.
+   */
+  @Get('users/:id/balance')
+  async getUserBalance(@Param('id', createUuidPipe()) id: string): Promise<Balance> {
+    return this.adminUsers.balanceFor(id);
   }
 
   @Patch('users/:id/status')

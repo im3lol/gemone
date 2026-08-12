@@ -4,6 +4,7 @@ import type {
   AdminPayoutSummary,
   AdminUserSummary,
   AuditLogEntry,
+  Balance,
   Paginated,
   UserFraudSignals,
   UserStatus,
@@ -37,22 +38,26 @@ const NOT_FOUND = {
  * what administrators have done to this account. Nothing was added to the API
  * for this screen.
  *
- * ## What is not here, and why
+ * ## The balance, and why it is the ledger's own answer
  *
- * **The balance.** No admin endpoint returns an arbitrary user's three
- * buckets: `GET /rewards/balance` is the owner's own, and the only admin path
- * to somebody else's is `PayoutReviewContext`, bundled into a payout detail.
- * The number is therefore absent rather than approximated from the conversions
- * below — a sum of reward amounts is not a balance, it ignores maturation,
- * chargebacks and locks. Recorded as TODO T84.
+ * `GET /admin/users/:id/balance` — added for this screen (T84) because it was
+ * the one figure with no admin path to it: `GET /rewards/balance` is the
+ * owner's own, and the only other route to somebody else's three buckets is
+ * `PayoutReviewContext`, bundled inside a payout detail, so an account that
+ * had never requested a withdrawal had no balance an admin could see. It
+ * returns `RewardAccountingService.getBalance` unchanged. Nothing here sums
+ * the conversions below into a total — that ignores maturation, chargebacks
+ * and locks, and a number on an admin screen that disagrees with the ledger is
+ * worse than no number.
  *
  * ## Awaited, not streamed
  *
  * Unlike the queue screens, the account *is* the page: there is no frame to
- * paint around it and nothing useful to show while it is missing. The five
- * calls go out together, and the four secondary ones degrade to `null` on
+ * paint around it and nothing useful to show while it is missing. The six
+ * calls go out together, and the five secondary ones degrade to `null` on
  * failure rather than taking the page down — an audit-log endpoint having a
- * bad minute should not stop an admin suspending an account.
+ * bad minute should not stop an admin suspending an account, and a balance
+ * that could not be fetched is shown as unknown rather than as zero.
  */
 export const load: PageServerLoad = async (event) => {
   const { params } = event;
@@ -65,8 +70,9 @@ export const load: PageServerLoad = async (event) => {
   const forAccount = (extra: Record<string, string>) =>
     new URLSearchParams({ ...extra, limit: String(ACTIVITY_LIMIT) }).toString();
 
-  const [account, payouts, conversions, signals, auditLog] = await Promise.all([
+  const [account, balance, payouts, conversions, signals, auditLog] = await Promise.all([
     apiAuthedJson<AdminUserSummary>(event, apiPath`/admin/users/${params.id}`),
+    apiAuthedJson<Balance>(event, apiPath`/admin/users/${params.id}/balance`),
     apiAuthedJson<Paginated<AdminPayoutSummary>>(
       event,
       `/admin/payouts?${forAccount({ userId: params.id })}`,
@@ -91,7 +97,18 @@ export const load: PageServerLoad = async (event) => {
     auditLog: auditLog.ok ? auditLog.value : null,
   };
 
-  return { account: account.value, activity, now: nowIso() };
+  /*
+   * Null on failure, like the four panels beside it, and never a zeroed
+   * stand-in: `balanceBuckets(null)` renders `—`, because a zero balance and
+   * an unfetchable balance are different claims about somebody's money and
+   * only one of them is evidence.
+   */
+  return {
+    account: account.value,
+    balance: balance.ok ? balance.value : null,
+    activity,
+    now: nowIso(),
+  };
 };
 
 /**

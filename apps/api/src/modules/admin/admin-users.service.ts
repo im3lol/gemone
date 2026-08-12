@@ -3,6 +3,7 @@ import {
   ADMIN_ACTIONS,
   ERROR_CODES,
   type AdminUserSummary,
+  type Balance,
   type ListUsersQuery,
   type Paginated,
   type UserStatus,
@@ -12,6 +13,7 @@ import { PrismaService } from '../../core/database/prisma.service';
 import { DomainError } from '../../core/errors/app-error';
 import { REVOCATION_REASONS } from '../auth/auth.constants';
 import { TokenService } from '../auth/token.service';
+import { RewardAccountingService } from '../rewards/reward-accounting.service';
 import { UsersService } from '../users/users.service';
 import { AdminAuditService } from './admin-audit.service';
 
@@ -40,6 +42,7 @@ export class AdminUsersService {
     private readonly prisma: PrismaService,
     private readonly users: UsersService,
     private readonly tokens: TokenService,
+    private readonly rewards: RewardAccountingService,
     private readonly audit: AdminAuditService,
   ) {}
 
@@ -62,6 +65,49 @@ export class AdminUsersService {
     const counts = await this.tokens.countActiveSessions([id]);
 
     return UsersService.toAdminSummary(user, counts.get(id) ?? 0);
+  }
+
+  /**
+   * Another account's three buckets — TODO T84.
+   *
+   * ## Composed, never recomputed
+   *
+   * `RewardAccountingService.getBalance` is the whole implementation, for the
+   * reason P2 exists: the accounting service is the only thing permitted to
+   * read balance state, and an admin surface that summed conversions instead
+   * would be a second answer to "how many points does this account have" —
+   * one that ignores maturation, chargebacks and locks, and that is wrong in
+   * exactly the cases somebody opens an admin screen to investigate. The
+   * arithmetic is not repeated here because there is no arithmetic here.
+   *
+   * This is the same call `reviewContext` already makes; T84 is that the
+   * answer was reachable only bundled inside a payout detail, so an account
+   * that had never requested a withdrawal had no balance an admin could see.
+   *
+   * ## The existence check is not ceremony
+   *
+   * `getBalance` answers zeros for an account with no stored balance rather
+   * than throwing — correct for its own caller, since the row is created with
+   * the user and "nothing has moved yet" *is* a balance of nothing. But
+   * without `requireById`, a mistyped id would answer `200` with seven zeros,
+   * and an operator would read "this account has no points" where the truth is
+   * "this account does not exist". Asking the user module first keeps those
+   * two apart, and costs one indexed lookup.
+   *
+   * ## Not audited, deliberately
+   *
+   * A payout destination is audited on read because reading where somebody's
+   * money goes is an action (§16.4). A balance is not a secret of that kind:
+   * it is the same class of fact as the fraud signals and the conversion list
+   * beside it, none of which are audited, and `PayoutReviewContext` has
+   * carried these three numbers to admins since Feature 6 with no entry
+   * written. Auditing it here and nowhere else would make the trail describe
+   * which screen was used rather than what was done.
+   */
+  async balanceFor(userId: string): Promise<Balance> {
+    await this.users.requireById(userId);
+
+    return this.rewards.getBalance(userId);
   }
 
   /**

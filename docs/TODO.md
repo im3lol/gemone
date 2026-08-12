@@ -2077,7 +2077,7 @@ four — and it is now structurally impossible rather than avoided.
 ---
 
 ### T84 — No admin endpoint returns another user's balance
-**Status:** open · **Raised:** UI phase 11 (admin users) · **Priority:** low
+**Status:** RESOLVED in UI phase 13 · **Raised:** UI phase 11 (admin users) · **Priority:** low
 
 `/admin/users/[id]` shows an account's fraud signals, withdrawals, conversions
 and administrative history, all from endpoints that already existed. It does
@@ -2096,6 +2096,21 @@ waiting for an endpoint. So the work is a controller method, not a design.
 **Trigger:** the first support question that is "how many points does this
 account have" rather than "should this withdrawal go out" — the second already
 has a screen.
+
+**Resolved in phase 13, and it was the controller method this entry predicted.**
+See D99. `GET /admin/users/:id/balance` returns `RewardAccountingService.
+getBalance` unchanged — the same call `PayoutReviewContext` has always made, now
+reachable for an account that has never requested a withdrawal. `AdminUsersService.
+balanceFor` is two statements and neither is arithmetic.
+
+The one thing that was not obvious from this entry: `getBalance` answers zeros
+for an account with no stored balance, which is correct for its own caller and
+wrong for an admin lookup — a mistyped id would have answered `200` with seven
+zeros, and "this account has no points" is not "this account does not exist".
+So the endpoint asks the user module first, and a nonexistent id is a 404.
+
+`/admin/users/[id]` shows the three buckets and the three lifetime figures above
+both columns, labelled as the ledger's own answer.
 
 ---
 

@@ -18,11 +18,12 @@
   rest and are linked to. A full payout history rendered here would be a second
   copy of `/admin/payouts` that nobody maintains.
 
-  ## No balance
+  ## The balance is not here
 
-  There is no admin endpoint for an arbitrary user's three buckets, and a total
-  summed from the conversions below is not a balance — it ignores maturation,
-  chargebacks and locks. Absent rather than approximated (TODO T84).
+  It is `UserBalance`, above both columns, read from the reward ledger through
+  `GET /admin/users/:id/balance` (T84). Deliberately not derived from the
+  conversions listed below: a sum of reward amounts ignores maturation,
+  chargebacks and locks, and the two numbers would disagree on the same screen.
 -->
 <script lang="ts">
   import type { AdminUserSummary } from '@gemone/contracts';

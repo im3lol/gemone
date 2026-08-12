@@ -24,6 +24,7 @@ export { default as SettingsFilters } from './SettingsFilters.svelte';
 export { default as SettingsList } from './SettingsList.svelte';
 export { default as UserAccountActivity } from './UserAccountActivity.svelte';
 export { default as UserActions } from './UserActions.svelte';
+export { default as UserBalance } from './UserBalance.svelte';
 export { default as UserFilters } from './UserFilters.svelte';
 export { default as UserList } from './UserList.svelte';
 export { default as UserTable } from './UserTable.svelte';

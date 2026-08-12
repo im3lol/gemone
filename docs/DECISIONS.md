@@ -3154,3 +3154,66 @@ had their own value. It had been invisible until a screen rendered the sentence.
 `overrideCounts()` now returns both numbers, because the `overriddenOnly` filter
 asks a different question — "has anybody stored anything" — and legitimately
 wants the total.
+
+## D99 — The admin balance is the accounting service's answer, or it is nothing
+
+**Context.** `/admin/users/[id]` has shown an account's fraud signals,
+withdrawals, conversions and administrative history since phase 11, and not its
+balance — the one figure a support question usually starts with. There was no
+way to ask for it: `GET /rewards/balance` is scoped to the caller inside the
+handler, because ownership is never something a caller supplies (§6.2), and the
+only administrative route to somebody else's three buckets was
+`PayoutReviewContext`, bundled inside a payout detail. An account that had never
+requested a withdrawal therefore had no balance any admin could read (T84).
+
+**Decision.** `GET /admin/users/:id/balance`, returning `Balance` verbatim.
+`AdminUsersService.balanceFor` is `requireById` followed by
+`RewardAccountingService.getBalance`, and there is no third statement.
+
+**Why it is a controller method and not a design.** P2 makes the accounting
+service the only thing permitted to read balance state, and `arch.spec.ts`
+enforces that mechanically. So the alternative was never "compute it a better
+way" — it was "compute it a second way", which on this screen means summing the
+conversions already listed on it. That sum ignores maturation, chargebacks and
+locks, and it is wrong in exactly the cases somebody opens an admin screen to
+investigate. A number on an admin screen that disagrees with the ledger is worse
+than no number, which is why phase 11 shipped the screen without one rather than
+with an approximation. An integration test now asserts the response equals
+`getBalance` field for field, and a second asserts it equals what the account
+holder is served for themselves — an operator and the person they are helping
+must not be reading two different numbers while talking to each other.
+
+**The existence check is the only judgement in it.** `getBalance` answers zeros
+for an account with no stored balance rather than throwing, which is right for
+its own caller: the row is created with the user, and "nothing has moved yet"
+*is* a balance of nothing. Reused unguarded here it would have made a mistyped
+id answer `200` with seven zeros, and an operator would have read "this account
+has no points" where the truth was "this account does not exist". So the
+endpoint asks the user module first, at the cost of one indexed lookup, and the
+four failures stay distinct: 401 unauthenticated, 403 non-admin, 404 unknown
+account, 422 malformed id.
+
+**Not audited, deliberately.** A payout destination is audited on read because
+reading where somebody's money goes is an action (§16.4). A balance is the same
+class of fact as the fraud signals and the conversion list beside it, none of
+which are audited, and `PayoutReviewContext` has carried these three numbers to
+admins since Feature 6 with no entry written. Auditing this endpoint alone would
+make the trail describe which screen an operator used rather than what they did.
+A test asserts the read writes nothing, so the decision is recorded where it can
+fail rather than only here.
+
+**Three buckets on the admin screen too, and the reason is sharper there.** The
+three answer three different support questions — *"why can't I withdraw"* is
+`pending`, *"where did my withdrawal go"* is `locked` — and only `available` is
+the number a withdrawal may be checked against. `total` is on the contract so
+nobody adds the three up wrongly, and `balanceBuckets` deliberately does not
+offer it as a fourth figure: an operator confirming a request against a total
+would be confirming it against points still inside a hold period. The lifetime
+figures sit below a rule, visually apart, because they describe what has passed
+through the account rather than what is in it.
+
+**And nothing writable.** Points move because something happened — a conversion,
+a chargeback, a withdrawal — and each has its own surface. A balance an admin
+could edit would be a way to move money with no event behind it, which is what
+the transaction history exists to make impossible; the read is the whole
+feature, and a test asserts `PATCH` and `POST` on the same path are 404.

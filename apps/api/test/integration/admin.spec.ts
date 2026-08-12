@@ -9,6 +9,7 @@ import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/core/database/prisma.service';
 import { createValidationPipe } from '../../src/core/errors/validation-pipe';
 import { REFRESH_COOKIE_NAME } from '../../src/modules/auth/auth.constants';
+import { RewardAccountingService } from '../../src/modules/rewards/reward-accounting.service';
 
 /**
  * Admin foundation against a real Postgres — ARCHITECTURE.md §18.3.
@@ -21,6 +22,7 @@ import { REFRESH_COOKIE_NAME } from '../../src/modules/auth/auth.constants';
 describe('admin foundation (integration)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let rewards: RewardAccountingService;
 
   const password = 'correct-horse-battery-staple';
   let counter = 0;
@@ -35,6 +37,9 @@ describe('admin foundation (integration)', () => {
     await app.init();
 
     prisma = app.get(PrismaService);
+    // The balance tests move points the way everything else in the system
+    // does — through the accounting service — rather than by writing rows.
+    rewards = app.get(RewardAccountingService);
   });
 
   afterAll(async () => {
@@ -119,6 +124,7 @@ describe('admin foundation (integration)', () => {
       // cannot be added without it.
       await request(server()).get('/admin/users').set(auth).expect(403);
       await request(server()).get(`/admin/users/${target.id}`).set(auth).expect(403);
+      await request(server()).get(`/admin/users/${target.id}/balance`).set(auth).expect(403);
       await request(server()).get('/admin/audit-log').set(auth).expect(403);
       await request(server())
         .patch(`/admin/users/${target.id}/status`)
@@ -300,6 +306,302 @@ describe('admin foundation (integration)', () => {
         .expect(404);
 
       await request(server()).get('/admin/users/not-a-uuid').set(auth).expect(422);
+    });
+  });
+
+  /**
+   * One account's three buckets — TODO T84.
+   *
+   * The endpoint is four lines and the risk is entirely in what it *does not*
+   * do: recompute. So these check the two things that would make an admin
+   * screen lie — a figure that disagrees with the accounting service, and a
+   * mistyped id answering `200` with zeros — rather than the shape of the JSON.
+   */
+  describe('user balance', () => {
+    /**
+     * Points moved the way the product moves them.
+     *
+     * A credit lands in `pending` because a hold period applies to it; the
+     * maturation row is what moves it to `available`; a withdrawal request is
+     * what reserves part of that into `locked`. Writing the three figures
+     * directly would test the serializer against itself.
+     */
+    async function fundAccount(userId: string) {
+      const matured = await rewards.credit({
+        userId,
+        amountPoints: 20_000,
+        source: { type: 'CONVERSION', id: 'conv-balance-1', label: 'Quick Survey' },
+      });
+      await rewards.mature(matured.id);
+
+      const held = await rewards.credit({
+        userId,
+        amountPoints: 3_000,
+        source: { type: 'CONVERSION', id: 'conv-balance-2', label: 'Second Survey' },
+      });
+
+      await rewards.lock(userId, 5_000, 'payout-balance-1');
+
+      return { matured, held };
+    }
+
+    it('returns the three buckets, each holding what the movements put there', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      await fundAccount(user.id);
+
+      const response = await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      // 20,000 credited and matured, less 5,000 reserved by the withdrawal.
+      expect(response.body.available).toBe(15_000);
+      // The second credit, still inside its hold period.
+      expect(response.body.pending).toBe(3_000);
+      // Reserved by the in-flight request, and no longer withdrawable.
+      expect(response.body.locked).toBe(5_000);
+    });
+
+    it('keeps the buckets distinct rather than collapsing them into one number', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      await fundAccount(user.id);
+
+      const response = await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      /*
+       * `total` is provided so nobody adds the three up wrongly — and it is
+       * explicitly not the number to check a withdrawal against, which is why
+       * all four are on the wire rather than a sum in place of the parts.
+       */
+      expect(response.body.total).toBe(23_000);
+      expect(response.body.available + response.body.pending + response.body.locked).toBe(
+        response.body.total,
+      );
+    });
+
+    it('carries the lifetime figures the accounting service already keeps', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      const { held } = await fundAccount(user.id);
+      await rewards.reverse(held.id, 'chargeback');
+
+      const response = await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      // What has passed through the account, which is a different question
+      // from what is in it — and the one an operator asks before deciding
+      // whether a withdrawal request is this account's first.
+      expect(response.body.lifetimeEarned).toBe(23_000);
+      expect(response.body.lifetimeReversed).toBe(3_000);
+      expect(response.body.lifetimeWithdrawn).toBe(0);
+    });
+
+    it('agrees with the accounting service, field for field', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      await fundAccount(user.id);
+
+      const response = await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      /*
+       * The regression that matters. The admin endpoint composes
+       * `getBalance` and reshapes nothing, so there is no second definition
+       * of a balance to drift — this is what asserts that it stays that way.
+       */
+      expect(response.body).toEqual(await rewards.getBalance(user.id));
+    });
+
+    it('is the same answer the account holder gets for themselves', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      await fundAccount(user.id);
+
+      const [own, administrative] = await Promise.all([
+        request(server())
+          .get('/rewards/balance')
+          .set('Authorization', `Bearer ${user.token}`)
+          .expect(200),
+        request(server())
+          .get(`/admin/users/${user.id}/balance`)
+          .set('Authorization', `Bearer ${admin.token}`)
+          .expect(200),
+      ]);
+
+      // An operator and the person they are helping must not be reading two
+      // different numbers while talking to each other.
+      expect(administrative.body).toEqual(own.body);
+    });
+
+    it('reconciles against the history that produced it', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      await fundAccount(user.id);
+
+      const response = await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      // PROJECT.md R4: the sums of the bucket deltas over a user's history
+      // *are* that user's balance. What this endpoint serves is that number.
+      const report = await rewards.reconcile(user.id);
+
+      expect(report.balanced).toBe(true);
+      expect(report.expected).toEqual({
+        pending: response.body.pending,
+        available: response.body.available,
+        locked: response.body.locked,
+      });
+    });
+
+    it('answers zeros for an account that has never earned anything', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+
+      const response = await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      // A real account with nothing in it. The status code is what separates
+      // this from the next test, which is the whole reason the endpoint looks
+      // the user up before reading the balance.
+      expect(response.body).toMatchObject({ pending: 0, available: 0, locked: 0, total: 0 });
+    });
+
+    it('404s on an account that does not exist, rather than reporting a balance of nothing', async () => {
+      const admin = await createUser('ADMIN');
+
+      const response = await request(server())
+        .get('/admin/users/0192f0a0-0000-7000-8000-00000000dead/balance')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(404);
+
+      /*
+       * `getBalance` answers zeros for an account with no stored balance,
+       * which is right for its own caller and wrong here: an operator reading
+       * "no points" about a mistyped id would conclude something false about
+       * an account that exists somewhere else.
+       */
+      expect(response.body.error.code).toBe(ERROR_CODES.USER_NOT_FOUND);
+    });
+
+    it('422s on a malformed id', async () => {
+      const admin = await createUser('ADMIN');
+
+      await request(server())
+        .get('/admin/users/not-a-uuid/balance')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(422);
+    });
+
+    it('refuses a signed-in non-admin with 403', async () => {
+      const user = await createUser('USER');
+      const target = await createUser('USER');
+      await fundAccount(target.id);
+
+      const response = await request(server())
+        .get(`/admin/users/${target.id}/balance`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(403);
+
+      expect(response.body.error.code).toBe(ERROR_CODES.FORBIDDEN);
+    });
+
+    it('refuses a user asking for their own balance through the admin path', async () => {
+      const user = await createUser('USER');
+
+      // The role is the control, not the ownership: `/rewards/balance` is
+      // where a user reads their own, and it takes no id at all.
+      await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(403);
+    });
+
+    it('refuses an unauthenticated caller with 401', async () => {
+      const target = await createUser('USER');
+
+      await request(server()).get(`/admin/users/${target.id}/balance`).expect(401);
+    });
+
+    it('exposes the balance and nothing else about the account', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      await fundAccount(user.id);
+
+      const response = await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      /*
+       * A payment destination is returned by exactly one endpoint and writes
+       * an audit entry when it is (§16.4). This is not that endpoint, and an
+       * allowlisted response shape is what keeps it from becoming one.
+       */
+      expect(Object.keys(response.body).sort()).toEqual([
+        'available',
+        'lifetimeEarned',
+        'lifetimeReversed',
+        'lifetimeWithdrawn',
+        'locked',
+        'pending',
+        'total',
+      ]);
+    });
+
+    it('is a read, and writes no audit entry', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+
+      await request(server())
+        .get(`/admin/users/${user.id}/balance`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      /*
+       * Deliberate. The destination read is audited because reading where
+       * somebody's money goes is an action; a balance is the same class of
+       * fact as the fraud signals beside it, and `PayoutReviewContext` has
+       * carried these three numbers to admins since Feature 6 with no entry
+       * written. Auditing it here alone would make the trail describe which
+       * screen was used rather than what was done.
+       */
+      expect(await prisma.adminAuditLog.count()).toBe(0);
+    });
+
+    it('offers no way to change a balance through the admin surface', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      const auth = { Authorization: `Bearer ${admin.token}` };
+
+      /*
+       * Points move because something happened — a conversion, a chargeback,
+       * a withdrawal — and every one of those has its own surface. A writable
+       * balance would be a way to move money with no event behind it.
+       */
+      await request(server())
+        .patch(`/admin/users/${user.id}/balance`)
+        .set(auth)
+        .send({ available: 999_999 })
+        .expect(404);
+
+      await request(server())
+        .post(`/admin/users/${user.id}/balance`)
+        .set(auth)
+        .send({ available: 999_999 })
+        .expect(404);
     });
   });
 

@@ -1,5 +1,5 @@
 import { USER_ROLES, USER_STATUSES } from '@gemone/contracts';
-import type { UserRole, UserStatus } from '@gemone/contracts';
+import type { Balance, UserRole, UserStatus } from '@gemone/contracts';
 
 /**
  * The user administration screen's vocabulary — ARCHITECTURE.md §8.4.
@@ -153,4 +153,93 @@ export function statusVariant(status: UserStatus): 'primary' | 'secondary' | 'da
  */
 export function shortId(id: string): string {
   return id.length <= 12 ? id : `${id.slice(0, 8)}…`;
+}
+
+/**
+ * The balance, in the words an operator answers a ticket with — TODO T84.
+ *
+ * ## Three buckets, never one number
+ *
+ * ARCHITECTURE.md §9.2, and on an admin screen the reason is sharper than on
+ * the user's own: the three answer three different support questions —
+ * *"why can't I withdraw"* is `pending`, *"where did my withdrawal go"* is
+ * `locked`, and only `available` is the number a withdrawal may be checked
+ * against. A screen that showed `total` would let an operator confirm a
+ * withdrawal against points inside a hold period.
+ *
+ * `total` is therefore deliberately not among them. It is on the contract so
+ * that nobody adds the three up wrongly, not so that it can be presented as a
+ * fourth bucket beside them.
+ *
+ * ## Read, never derived
+ *
+ * Each entry names the field it reads and does no arithmetic. That is what
+ * makes this list checkable: the point of T84 is that a balance summed from
+ * the conversions on the same page would ignore maturation, chargebacks and
+ * locks, so the one property worth a test is that these figures come from the
+ * accounting service's own answer and from nowhere else.
+ */
+export interface BalanceBucket {
+  key: 'available' | 'pending' | 'locked';
+  label: string;
+  /** What this bucket means for the person holding the account. */
+  hint: string;
+  tone: 'brand' | 'amber' | 'blue';
+  /** Undefined when the balance could not be loaded — never zero. */
+  points: number | undefined;
+}
+
+const BUCKETS: readonly Omit<BalanceBucket, 'points'>[] = [
+  {
+    key: 'available',
+    label: 'Available',
+    hint: 'Withdrawable now. The only bucket a withdrawal can be locked against.',
+    tone: 'brand',
+  },
+  {
+    key: 'pending',
+    label: 'Pending',
+    hint: 'Credited but still inside its hold period. Becomes available when the hold elapses.',
+    tone: 'amber',
+  },
+  {
+    key: 'locked',
+    label: 'Reserved',
+    hint: 'Held by a withdrawal that is still being decided. Consumed on settle, returned on rejection.',
+    tone: 'blue',
+  },
+];
+
+/**
+ * `undefined` points rather than zeros when `balance` is null.
+ *
+ * The same rule the user's own wallet follows: a zero balance and an unknown
+ * balance are different claims about somebody's money, and on this screen the
+ * wrong one would be read as evidence.
+ */
+export function balanceBuckets(balance: Balance | null): BalanceBucket[] {
+  return BUCKETS.map((bucket) => ({ ...bucket, points: balance?.[bucket.key] }));
+}
+
+/**
+ * The lifetime figures, which are not buckets and are not shown as such.
+ *
+ * They answer a different question — what has passed *through* this account,
+ * rather than what is in it — and `lifetimeWithdrawn` is the one an operator
+ * reads before deciding whether a withdrawal request is this account's first.
+ */
+export interface LifetimeFigure {
+  key: 'lifetimeEarned' | 'lifetimeWithdrawn' | 'lifetimeReversed';
+  label: string;
+  points: number | undefined;
+}
+
+const LIFETIME: readonly Omit<LifetimeFigure, 'points'>[] = [
+  { key: 'lifetimeEarned', label: 'Earned, all time' },
+  { key: 'lifetimeWithdrawn', label: 'Withdrawn, all time' },
+  { key: 'lifetimeReversed', label: 'Reversed, all time' },
+];
+
+export function lifetimeFigures(balance: Balance | null): LifetimeFigure[] {
+  return LIFETIME.map((figure) => ({ ...figure, points: balance?.[figure.key] }));
 }
