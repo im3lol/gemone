@@ -2,6 +2,7 @@ import { Redis } from 'ioredis';
 import { afterAll, beforeAll, beforeEach } from 'vitest';
 
 import { loadDotenvForDevelopment } from '../../src/core/config/load-dotenv';
+import { resolveTestDatabaseUrl } from '../../src/core/database/test-database';
 
 /**
  * Integration test setup.
@@ -39,6 +40,31 @@ loadDotenvForDevelopment();
 process.env.CLICK_SIGNING_SECRET ??= 'integration-test-click-signing-secret-x';
 process.env.PROVIDER_MOCK_SECRET = 'mock-fixture-secret';
 process.env.PROVIDER_MOCK_AFFILIATE_ID = 'AFF-TEST';
+
+/**
+ * The database this suite is allowed to delete from — TODO T81, second half.
+ *
+ * D88 gave the suite its own queue prefix and left this: `DATABASE_URL` still
+ * came from `apps/api/.env`, which is the database `docker compose` serves, and
+ * these tests call `deleteMany()` on eleven tables. One integration file wipes
+ * the local admin account, the registered provider, the synced catalog and
+ * every account used to verify something by hand. It happened three times
+ * while this phase was being built, each time presenting as "the admin
+ * password stopped working" — which is exactly the shape of failure D88
+ * describes for the queues: it does not look like the thing it is.
+ *
+ * `resolveTestDatabaseUrl` appends `_test` to whatever `DATABASE_URL` names, so
+ * a developer who has only ever copied `.env.example` gets an isolated
+ * database with no new configuration — and it **refuses to run** against a
+ * database not named `*_test` rather than warning. `global-setup.ts` has
+ * already created and migrated it by the time this runs.
+ *
+ * **Set before the application boots**, which is what makes it work: setup
+ * files run before any test file imports `AppModule`, so `PrismaService`
+ * connects to a URL that is already in place. The same reason `QUEUE_PREFIX`
+ * below is set here.
+ */
+process.env.DATABASE_URL = resolveTestDatabaseUrl(process.env);
 
 /**
  * The queues this suite owns, and nobody else — TODO T81, resolved.

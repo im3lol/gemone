@@ -1,6 +1,5 @@
 import { Transform, Type } from 'class-transformer';
 import {
-  IsEmail,
   IsIn,
   IsInt,
   IsOptional,
@@ -58,8 +57,23 @@ export class ListUsersDto {
   @IsIn(ROLES)
   role?: UserRole;
 
+  /**
+   * A **fragment** of an email, not an address.
+   *
+   * `UsersService.findMany` has always matched this with `contains`, and
+   * `ListUsersQuery` has always documented it as a substring match — but this
+   * field validated it with `@IsEmail`, so the only queries that passed were
+   * the complete addresses for which a search box is unnecessary. `?email=p11`
+   * was answered with *"must be a valid email address"*, which is a correct
+   * sentence about the wrong thing.
+   *
+   * Bounded rather than unvalidated: the value reaches a `contains`, and a
+   * megabyte of it is a query worth refusing before it reaches the database.
+   */
   @IsOptional()
-  @IsEmail({}, { message: 'must be a valid email address' })
+  @IsString()
+  @MaxLength(320)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   email?: string;
 
   /**

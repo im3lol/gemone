@@ -1,8 +1,14 @@
 import type {
+  AdminConfigurationKeySummary,
+  AdminConversionSummary,
   AdminHeldConversionSummary,
   AdminPayoutSummary,
+  AdminUserSummary,
+  AuditLogEntry,
+  Paginated,
   ProviderSummary,
   SyncRunSummary,
+  UserFraudSignals,
 } from '@gemone/contracts';
 
 /**
@@ -79,3 +85,54 @@ export type HeldQueueResult =
 export type FraudActionResult =
   | { ok: true; action: 'clear' | 'confirm'; conversionId: string; message: string }
   | { ok: false; action: string; conversionId: string; message: string };
+
+/**
+ * What the streamed accounts list resolves to.
+ *
+ * **A result, not a rejection** — D83, for the reason `QueueResult` records.
+ */
+export type UserListResult =
+  | { ok: true; items: AdminUserSummary[]; total: number }
+  | { ok: false };
+
+/**
+ * What an administrator sees about an account besides the account itself.
+ *
+ * Every field is nullable and every one is a **separate admin endpoint**, each
+ * asked with the `userId` filter it already had. A null is that endpoint
+ * having a bad minute, and the panel says so rather than the page failing:
+ * none of these is what an admin came to this screen to change.
+ */
+export interface AccountActivity {
+  payouts: Paginated<AdminPayoutSummary> | null;
+  conversions: Paginated<AdminConversionSummary> | null;
+  signals: UserFraudSignals | null;
+  auditLog: Paginated<AuditLogEntry> | null;
+}
+
+/** What a user action hands back. A discriminated union, for D83's reason. */
+export type UserActionResult =
+  | { ok: true; action: 'status' | 'revoke'; message: string }
+  | { ok: false; action: string; message: string };
+
+/**
+ * What the streamed settings list resolves to.
+ *
+ * **A result, not a rejection** — D83. `AdminConfigurationKeyList` has no
+ * pagination: the keys are declared in code and counted in tens, so a pager
+ * over thirty of them would be ceremony.
+ */
+export type SettingsListResult =
+  | { ok: true; items: AdminConfigurationKeySummary[]; total: number }
+  | { ok: false };
+
+/**
+ * What a settings write hands back.
+ *
+ * Carries `value` and `reason` on failure so the form can be refilled: a
+ * settings form that clears itself on a refusal makes the operator retype a
+ * JSON array to find out what was wrong with it the second time.
+ */
+export type SettingActionResult =
+  | { ok: true; action: 'set' | 'reset'; message: string; value: string; reason: string }
+  | { ok: false; action: string; message: string; value: string; reason: string };

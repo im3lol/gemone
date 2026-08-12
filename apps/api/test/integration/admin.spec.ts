@@ -184,6 +184,79 @@ describe('admin foundation (integration)', () => {
       expect(admins.body.items.map((u: { id: string }) => u.id)).toEqual([admin.id]);
     });
 
+    /**
+     * Searching by a fragment of an address — the regression.
+     *
+     * `UsersService.findMany` has always matched with `contains` and
+     * `ListUsersQuery` has always documented a substring match, but
+     * `ListUsersDto` validated the parameter with `@IsEmail`. The only queries
+     * that passed were complete addresses, which is precisely the case a
+     * search box is not needed for: `?email=admin-test` was answered *"must be
+     * a valid email address"*.
+     */
+    describe('searching by email', () => {
+      it('matches on a fragment, not only on a whole address', async () => {
+        const admin = await createUser('ADMIN');
+        const target = await createUser('USER');
+        const fragment = target.email.slice(0, 12);
+
+        const response = await request(server())
+          .get(`/admin/users?email=${encodeURIComponent(fragment)}`)
+          .set('Authorization', `Bearer ${admin.token}`)
+          .expect(200);
+
+        expect(response.body.items.map((u: { id: string }) => u.id)).toContain(target.id);
+      });
+
+      it('matches a whole address too', async () => {
+        const admin = await createUser('ADMIN');
+        const target = await createUser('USER');
+
+        const response = await request(server())
+          .get(`/admin/users?email=${encodeURIComponent(target.email)}`)
+          .set('Authorization', `Bearer ${admin.token}`)
+          .expect(200);
+
+        expect(response.body.items.map((u: { id: string }) => u.id)).toEqual([target.id]);
+      });
+
+      it('ignores case, because addresses are stored normalised', async () => {
+        const admin = await createUser('ADMIN');
+        const target = await createUser('USER');
+
+        const response = await request(server())
+          .get(`/admin/users?email=${encodeURIComponent(target.email.toUpperCase())}`)
+          .set('Authorization', `Bearer ${admin.token}`)
+          .expect(200);
+
+        expect(response.body.items.map((u: { id: string }) => u.id)).toEqual([target.id]);
+      });
+
+      it('answers a fragment that matches nobody with an empty page', async () => {
+        const admin = await createUser('ADMIN');
+
+        const response = await request(server())
+          .get('/admin/users?email=nobody-has-this-fragment')
+          .set('Authorization', `Bearer ${admin.token}`)
+          .expect(200);
+
+        // Empty, not an error: "no results" is a legitimate answer to a
+        // search, and the screen has a state that says so.
+        expect(response.body).toMatchObject({ total: 0, items: [] });
+      });
+
+      it('still bounds the parameter', async () => {
+        const admin = await createUser('ADMIN');
+
+        // The value reaches a `contains`. Unbounded is a query worth refusing
+        // before the database sees it.
+        await request(server())
+          .get(`/admin/users?email=${'a'.repeat(400)}`)
+          .set('Authorization', `Bearer ${admin.token}`)
+          .expect(422);
+      });
+    });
+
     it('rejects an out-of-range limit rather than silently clamping at the API', async () => {
       const admin = await createUser('ADMIN');
 

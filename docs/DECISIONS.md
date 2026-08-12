@@ -2820,3 +2820,161 @@ same hold both see both buttons; the second gets a 409 — *"This conversion is
 credited and has no hold to resolve"* — because `resolveHold` re-reads the row
 `FOR UPDATE` inside the transaction that moves the points. The disabled buttons
 during submission are courtesy. Verified by posting the same decision twice.
+
+## D93 — The users screen composes existing endpoints, and the search bug was in the DTO
+
+**Context.** `/admin/users` was the last operational gap with a complete API
+behind it: `GET /admin/users`, `GET /admin/users/:id`, `PATCH …/status` and
+`POST …/revoke-sessions` have existed since the admin foundation, along with an
+audit trail nothing rendered.
+
+**Decision.** Build the screen and add no endpoint. The detail page composes
+five calls that already existed — the account, its withdrawals, its
+conversions, its fraud signals, and the audit entries whose `targetId` is the
+account — each using the `userId` filter that endpoint already had. `admin` is
+a composition layer (§4.3), and so is the page.
+
+**Reproduced first, and the bug was not where it looked.** Searching by a
+fragment of an address — the thing a search box is for — was answered *"must be
+a valid email address"*. `UsersService.findMany` has always matched with
+`contains` and `ListUsersQuery` has always documented "case-insensitive
+substring match", but `ListUsersDto` validated the parameter with `@IsEmail`.
+The only queries that passed were complete addresses, which is precisely the
+case a search box is least needed for.
+
+The fix is one decorator: the field is a *fragment*, so it is validated as a
+bounded string. Five integration tests cover fragment, whole address, case,
+no-match and the length bound. Fixing it in the browser — pre-checking the
+value, or sending it only when it looks like an address — would have been
+building the UI around a defect.
+
+**What is deliberately absent.** No balance column and no balance panel: no
+admin endpoint returns another user's three buckets, and a total summed from
+the conversions on the page ignores maturation, chargebacks and locks. A number
+on an admin screen that disagrees with the ledger is worse than no number
+(T84). No role control, because no endpoint changes a role and inventing what
+demoting the last admin means is a recovery story, not a form field (T85).
+
+**No status state machine, and that is not an omission.** `UpdateUserStatusDto`
+validates with `@IsIn(STATUSES)` and nothing else — any status may follow any
+other, because an account banned in error has to be reachable again, and a
+machine forbidding it would need an override that is the same transition with a
+longer name. `$lib/admin/payout-queue.ts` mirrors a real state machine because
+`payout-state-machine.ts` is one; mirroring a machine that does not exist would
+be inventing it. The screen only declines to offer the status an account
+already holds — a button whose success is indistinguishable from doing nothing.
+
+**The self-action rule is explained, not enforced.** `setStatus` refuses
+`targetUserId === adminId` with a 403; the page says so and renders no status
+controls on the admin's own account, while leaving session revocation available
+because that one is permitted. The API remains the control.
+
+## D94 — The settings screen knows how to render a key, never which keys exist
+
+**Context.** P3's promise — *"adjust reward rates, hold periods, withdrawal
+limits, daily limits, fraud thresholds, currencies, without a developer"* — has
+been a database row per value since Feature 4, reachable only by a hand-written
+`PUT`. Thirty-seven keys across seven namespaces.
+
+**Decision.** The screen contains no list of settings, no labels for them, no
+ranges, and no sections. `GET /admin/configuration` returns every registered key
+with its description, declared type, permitted scopes, code default, the value
+in force and where that value came from; the page renders that.
+
+**Because the alternative is a second declaration.** Keys are declared in code
+by the module that owns the rule (§4.9). A hand-written form with thirty-seven
+labelled fields is that declaration written again, in a place with no compiler
+relationship to the first, and it silently omits the thirty-eighth the moment
+somebody registers it. The grouping is the dotted namespace, which is a fact
+about the key rather than a taxonomy this screen invented — so a module
+registering `email.` gets its own group with no change here.
+
+**The control follows `valueType`, and validation follows nobody here.** A
+boolean gets a two-option select, a number a numeric field, the two array keys a
+textarea holding their JSON. What a value may *be* is the Zod schema registered
+with the key — `min(0).max(180)` for the hold period — and the API's refusal is
+what the operator reads: *"Too big: expected number to be <=180"*. A copy of
+that range in a Svelte file would be the copy no test runs against a real write.
+
+**One exception, and it is principled.** Unparseable JSON is refused in the
+action rather than sent. It is not a value of any type, so there is nothing to
+hand on, and the schema would answer with an error about a string — describing
+the symptom rather than the mistake. Syntax is also the one thing a browser can
+be certain of without knowing the rule.
+
+**Reset is not "write the default".** §4.9 turns on the difference between an
+explicit setting and an unset one, and only the unset one follows code. Writing
+today's default explicitly would freeze it as a decision nobody made, and the
+screen would then show "Set globally" for a value nobody chose.
+
+**The two warnings are read, not assigned.** A key with provider overrides warns
+that a global write will not reach those providers — from the API's own
+`overrideCount`, because a provider row wins over the global one. A key at
+`source: default` says so. Neither is a severity this screen decided: there is
+no High/Medium/Low badge anywhere, because the threshold that makes a setting
+dangerous is itself configuration, and a danger rating invented in a component
+is a rule no configuration could change.
+
+**Verified through the consumer, not the database.** `payouts.minimum_points`
+was changed to 7777 in the browser; `GET /payouts/options` then reported 7777,
+`POST /payouts` refused 5000 points with *"A withdrawal must be between 7777 and
+500000 points"*, and the user's own withdrawal screen quoted the new floor. Then
+reset, and all three agreed on 1000 again.
+
+## D95 — The integration suite gets its own database, and refuses to run without one
+
+**Context.** D88 gave the suite its own BullMQ prefix and closed the queue half
+of T81. The entry left behind said the shared database had never caused a test
+failure and left it there. That had the risk backwards: the damage was never to
+the tests, it was **by** them. `admin-catalog.spec.ts` alone calls
+`deleteMany()` on eleven tables, against whatever `DATABASE_URL` names — which
+on a developer's machine is the database `docker compose` is serving.
+
+It cost this phase three admin accounts before it was addressed, each time
+presenting as "the admin password stopped working", which is the same disguise
+D88 describes for the queues: the failure does not look like the thing it is.
+
+**Decision.** The suite runs against `<database>_test`, derived from
+`DATABASE_URL` unless `TEST_DATABASE_URL` says otherwise, created and migrated
+once per run by a Vitest `globalSetup`, and it **refuses to start** against any
+database whose name does not end in `_test`.
+
+**Derived rather than required.** A developer who has only ever copied
+`.env.example` gets isolation with no new configuration and no setup step to
+forget. That is the whole point: a safety measure that has to be switched on is
+one that is off on the machine where it matters. CI already pointed at
+`gemone_test`, so a name that is already a test name is used unchanged and the
+pipeline needed no edit.
+
+**The check is the name, not "different from `DATABASE_URL`".** That comparison
+passes for any two different databases — including staging, and including a
+colleague's. `_test` is a positive claim about what the database is *for*, and
+it is applied to `TEST_DATABASE_URL` as well, because a variable named "test" is
+exactly the sort of thing that gets copied with a real value still in it.
+
+**A database, not a schema.** `?schema=gemone_test` would also isolate and is
+one word of configuration. It relies on Prisma setting `search_path` on every
+connection, and this codebase issues raw SQL — `SELECT id, status FROM
+conversions … FOR UPDATE` — whose resolution would then depend on that. A
+separate database on the same container has no such dependency: every query
+behaves exactly as it does in production, which is what a test environment is
+for. No compose service was added.
+
+**`globalSetup`, not `setupFiles`.** Setup files run per test file, so
+`migrate deploy` there would be twenty-eight invocations racing on the same
+migrations. `globalSetup` runs once, in one process, before any file loads.
+`deploy` rather than `dev` for the reason CI uses it: a test run that can author
+a migration is a test run that can hide a schema change nobody reviewed.
+
+**Measured.** The developer database was snapshotted before and after two
+consecutive full runs with the worker running — 8 users, 2 offers, 1 provider,
+37 configuration keys, identical both times — while the suite passed 28 files /
+601 tests. The guard was then pointed at the developer database deliberately and
+refused, naming it; and with no database configured at all it refused rather
+than guessing.
+
+**What stays shared, on purpose.** `ow:1:invalidation`. Its `ow:1:` is a
+protocol version, not a namespace (§14.3), and the message says only "forget
+your cached copy of key X" — each process re-reads from its own database, so the
+worst case is a redundant cache read. Turning a versioned protocol constant into
+an environment-derived one to prevent that would be the wrong trade.

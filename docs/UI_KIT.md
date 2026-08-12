@@ -35,13 +35,15 @@ one phase at a time.
 | `apps/web/src/lib/components/earnings/` | The statement — two filters, table, pager |
 | `apps/web/src/lib/components/payouts/` | The withdrawal screen — balance, form, history |
 | `apps/web/src/lib/components/offers/` | The offer wall — filter bar, grid, card, tile |
-| `apps/web/src/lib/components/admin/` | The payout queue, the provider cards, the fraud review queue |
+| `apps/web/src/lib/components/admin/` | The five admin surfaces: payouts, fraud, users, providers, settings |
 | `apps/web/src/lib/rewards/ledger.ts` | What a ledger movement *means*, in one tested module |
 | `apps/web/src/lib/payouts/payout.ts` | What a withdrawal state means, and points as money |
 | `apps/web/src/lib/offers/offer.ts` | What an offer category means, and the tile's colour |
 | `apps/web/src/lib/admin/payout-queue.ts` | The queue's vocabulary, and which transitions a state offers |
 | `apps/web/src/lib/admin/providers.ts` | Provider health, sync outcomes, capabilities, intervals |
 | `apps/web/src/lib/admin/fraud.ts` | What a fired rule looked at, and what each decision does to the points |
+| `apps/web/src/lib/admin/users.ts` | What an account's standing means, and which changes the API accepts |
+| `apps/web/src/lib/admin/settings.ts` | How to render *a* key — never which keys exist |
 | `apps/web/src/routes/dev/ui/` | Visual showcase — development only, 404s in a production build |
 | `apps/web/vite.config.ts` | The Tailwind plugin |
 
@@ -905,6 +907,78 @@ nothing here".
 The page rebuilds the pager's query string from the filters it *applied*, not
 from `url.search`. A value the server rejected — `?status=nonsense` — is
 dropped once, rather than carried onto every pager link to be dropped again.
+
+---
+
+## 9.9 The accounts screens
+
+ARCHITECTURE.md §8.4. A list and a detail, and the detail is where the shape is
+worth recording.
+
+### Decisions left, evidence right
+
+`xl:grid-cols-2` with the two status forms and session revocation on the left,
+and the account's fraud signals, withdrawals, conversions and administrative
+history on the right. An operator deciding whether to suspend an account should
+not have to remember what they read while scrolling to the control.
+
+Each evidence panel is a **separate endpoint and fails on its own**. A null is
+that call having a bad minute and the panel says so; the page carries on,
+because none of them is what the operator came to change.
+
+### The table drops columns rather than scrolling
+
+Below `md` the accounts table keeps **Account** and **Status** and folds role
+and registration date into the first cell. Same DOM, same rows, no second markup
+tree — the pattern the payout queue established.
+
+### The search field is `type="text"`
+
+Deliberately. `type="email"` makes the browser refuse "p11" before the form is
+ever submitted, which is the same mistake the API made until this phase: the
+parameter is a *fragment* matched with `contains`, and a whole address is the
+case a search box is least needed for.
+
+---
+
+## 9.10 The settings screens
+
+P3, ARCHITECTURE.md §4.9. The one screen in this kit with **no content of its
+own**.
+
+### It renders a key; it does not know the keys
+
+No list of settings, no labels, no sections, no ranges. The API returns each
+key's description, declared type, permitted scopes, default and effective value,
+and the page renders that. Groups are the dotted namespace, which the key
+already declares.
+
+The control follows `valueType`: boolean → a two-option `Select`, number → a
+numeric `Input`, json → a monospace textarea with the value pretty-printed,
+string → a text `Input`. Adding a key of any of those types needs no change
+here.
+
+### Where the value came from is a badge, not a footnote
+
+§4.9's whole reason for existing: *"an admin who cannot tell an explicit setting
+from an unset one cannot change either safely."* `Default` / `Set globally` /
+`Set for this provider` sit beside every key in the list and at the top of the
+detail, and the code default is shown next to the effective value rather than
+instead of it.
+
+### The form keeps what was typed when a write is refused
+
+The action returns the submitted value and reason on failure and the form
+prefers them over the stored ones. A settings form that clears itself makes an
+operator retype a JSON array to find out what was wrong with it the second time.
+
+### Two warnings, both read from the response
+
+A key with provider overrides warns that a global write will not reach those
+providers — a provider row wins over the global one. A key still on its default
+says so. There is **no danger rating**: the threshold that makes a setting
+significant is itself configuration, so a High/Medium/Low badge invented in a
+component would be a rule no configuration could change.
 
 ---
 

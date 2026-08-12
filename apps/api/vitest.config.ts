@@ -56,6 +56,12 @@ export default defineConfig({
           globals: true,
           environment: 'node',
           include: ['test/integration/**/*.spec.ts'],
+          /*
+           * Creates and migrates the isolated test database, once, before any
+           * file loads — TODO T81. `setupFiles` runs per file and would race;
+           * this hook runs once in one process (see `global-setup.ts`).
+           */
+          globalSetup: ['test/integration/global-setup.ts'],
           setupFiles: ['test/integration/setup.ts'],
           root: import.meta.dirname,
           testTimeout: 30_000,

@@ -923,5 +923,30 @@ decisions. There are deliberately **no risk bands** — the threshold that makes
 a score meaningful is per-rule configuration, and a High/Medium/Low badge drawn
 in a component would be a fraud rule written in a presentation module (D92).
 
+Phase 11 adds the two remaining admin screens and closes the second half of the
+oldest infrastructure debt.
+
+`/admin/users` is composed entirely from endpoints that already existed — the
+account, its withdrawals, its conversions, its fraud signals and the audit
+entries against it, each through the `userId` filter that endpoint already had.
+No endpoint was added (D93). Searching by part of an address, which is what a
+search box is for, had never worked: the service matched with `contains` and the
+DTO validated `@IsEmail`, so only complete addresses passed. Fixed in the API
+with a regression test, not worked around in the browser.
+
+`/admin/settings` contains **no list of settings**. It renders whatever
+`GET /admin/configuration` says is registered — thirty-seven keys across seven
+namespaces — grouped by the namespace each key declares, with the control chosen
+by the declared type and the validation left entirely to the key's own schema
+(D94). A hand-written form would be a second declaration of keys that are
+declared in code, and it would omit the thirty-eighth.
+
+**T81 is fully closed.** D88 isolated the queues in phase 8 and left the
+database, on the grounds that no test had failed because of it. The risk was
+the other way round: the suite *deletes* from eleven tables, and it was deleting
+from the developer's database — three admin accounts in this phase alone. The
+suite now derives its own `_test` database, creates and migrates it, and refuses
+to run against anything not named that way (D95).
+
 Departures from what this audit and DESIGN_SYSTEM.md record are deliberate and
-are logged as [DECISIONS.md](DECISIONS.md) D79–D92.
+are logged as [DECISIONS.md](DECISIONS.md) D79–D95.

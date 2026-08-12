@@ -2076,8 +2076,104 @@ four — and it is now structurally impossible rather than avoided.
 
 ---
 
+### T84 — No admin endpoint returns another user's balance
+**Status:** open · **Raised:** UI phase 11 (admin users) · **Priority:** low
+
+`/admin/users/[id]` shows an account's fraud signals, withdrawals, conversions
+and administrative history, all from endpoints that already existed. It does
+not show the balance, because there is no way to ask for one: `GET
+/rewards/balance` is scoped to the caller, and the only admin path to somebody
+else's three buckets is `PayoutReviewContext`, bundled inside a payout detail.
+
+**Not approximated.** Summing the conversions on the page is not a balance — it
+ignores maturation, chargebacks and locks — and a number on an admin screen that
+disagrees with the ledger is worse than no number.
+
+`RewardAccountingService.findMany` already accepts `AdminRewardHistoryQuery`
+with a `userId`, and that query type has been in the contract since Feature 4
+waiting for an endpoint. So the work is a controller method, not a design.
+
+**Trigger:** the first support question that is "how many points does this
+account have" rather than "should this withdrawal go out" — the second already
+has a screen.
+
+---
+
+### T85 — An account's role cannot be changed through the API
+**Status:** open · **Raised:** UI phase 11 (admin users) · **Priority:** low
+
+`ADMIN_ACTIONS.USER_ROLE_CHANGED` is in the audit vocabulary and nothing writes
+it. Promotion is `create-admin.js`, which ARCHITECTURE.md §8.4 intends —
+"provisioned by a seed script or by an existing admin" — but only the first half
+of that sentence has an implementation.
+
+`/admin/users/[id]` therefore offers no role control. Adding one would mean
+inventing what demoting the last admin does, and that is a decision with a
+recovery story attached, not a form field.
+
+**Trigger:** a deployment with more than one operator, where provisioning by
+shell is a person waiting on somebody with server access.
+
+---
+
+### T86 — A malformed id on `/admin/payouts/[id]` reports 502
+**Status:** open · **Raised:** UI phase 11 · **Priority:** low
+
+`error(result.failure.status === 404 ? 404 : 502, …)` turns the API's 422 for an
+unparseable UUID into a bad-gateway page, which blames the API for a URL
+somebody mistyped — and 502 is the page an operator escalates. The same line was
+written into `/admin/users/[id]` and fixed there to `status < 500 ? 404 : 502`
+during phase 11; the payout screen was left alone because it was outside that
+phase's scope.
+
+**Trigger:** touching that file for any reason.
+
+---
+
+### T87 — Settings can only be edited at GLOBAL scope
+**Status:** open · **Raised:** UI phase 11 (admin settings) · **Priority:** medium
+
+`PUT /admin/configuration/:key` accepts `scope: PROVIDER` with a `scopeId`, and
+eleven of the thirty-seven registered keys declare that scope. `/admin/settings/
+[key]` writes only at GLOBAL.
+
+Existing provider overrides are **shown**, with which provider each belongs to,
+and the edit form warns when any exist — a global write is shadowed for exactly
+those providers. So nothing is hidden; it is just not editable here.
+
+A per-provider editor is a genuinely different screen: it needs a provider
+picker, and the value it displays depends on which provider is selected.
+Building half of one would let an operator set an override without ever seeing
+the other providers' values, which is how the resolution chain becomes
+surprising.
+
+**Trigger:** the first provider that needs a different hold period or reward
+share — which is the case P3's PROVIDER scope was designed for, so this is the
+most likely of these to come due.
+
+---
+
+### T88 — Concurrent configuration writes overwrite each other silently
+**Status:** open · **Raised:** UI phase 11 (admin settings) · **Priority:** low
+
+`SetConfigurationDto` carries no version, etag or expected-current-value, so two
+administrators editing the same key in the same minute both succeed and the
+second value wins with nothing said to either.
+
+The blast radius is bounded by the audit trail: every write records the old
+value, the new one, who wrote it and why, and `/admin/settings/[key]` renders
+that timeline — so a change that appeared from nowhere is attributable on the
+next load. That is detection, not prevention.
+
+Preventing it means a precondition on the write, which is an API change.
+
+**Trigger:** a second full-time operator, or the first time a configuration
+change is reverted by accident.
+
+---
+
 ### T81 — The integration suite cannot run while the dev worker is up
-**Status:** RESOLVED in UI phase 8 · **Raised:** UI phase 5 (earnings)
+**Status:** RESOLVED — queues in UI phase 8, database in UI phase 11 · **Raised:** UI phase 5 (earnings)
 
 `docker compose up` runs a worker that consumes the same Redis queues and the
 same Postgres database the integration suite uses. Running
@@ -2131,12 +2227,38 @@ worker up now passes 28 files / 584 tests **with the worker running** — which
 is the whole point: nothing has to be stopped, and nothing depends on anybody
 remembering to.
 
-What this does *not* isolate is the database. The worker's own scheduled jobs
-— a catalog tick every 60s, an hourly maturation sweep — still read the shared
-development database. No test has ever failed on that, and it is a different
-and much larger change (a second database plus a migration step). Recorded here
-rather than fixed: if a test ever fails in a way that looks like a stray sweep,
-this paragraph is the first place to look.
+**The database half, resolved in phase 11.** See D95. The paragraph that stood
+here said no test had ever failed on the shared database and left it at that.
+It had the risk backwards: the damage was not to the tests, it was *by* them.
+`admin-catalog.spec.ts` alone calls `deleteMany()` on eleven tables, and it ran
+against whatever `DATABASE_URL` named — which on a developer's machine is the
+database `docker compose` is serving. One integration file destroys the local
+admin account, the registered provider, the synced catalog and every account
+used to verify a feature by hand.
+
+That was reproduced deliberately in phase 11 and had already happened three
+times unprompted while building it, each time presenting as *"the admin
+password stopped working"* — the same shape of disguise the queue half wore.
+
+The fix is the same shape as the queue fix, one level down: the suite derives
+`<database>_test` from `DATABASE_URL`, `global-setup.ts` creates and migrates it
+once per run, and `resolveTestDatabaseUrl` **refuses to run** against any
+database whose name does not end in `_test`. A developer who has only ever
+copied `.env.example` gets isolation with no new configuration, which is the
+only kind of safety measure that is actually on.
+
+Measured: the developer database was snapshotted before and after two
+consecutive full runs with the worker up — 8 users, 2 offers, 1 provider, 37
+configuration keys, identical both times — while the suite passed 28 files /
+601 tests.
+
+**What remains shared, deliberately.** `ow:1:invalidation`, the cache
+invalidation channel (§14.3). Its `ow:1:` is a *protocol version*, not a
+namespace, and the message it carries says only "forget your cached copy of key
+X" — each process then re-reads from its own database, so the worst case is a
+cache miss in whichever process was listening. Left alone rather than made
+configurable, because turning a versioned protocol constant into an
+environment-derived one to prevent a redundant cache read is the wrong trade.
 
 ---
 

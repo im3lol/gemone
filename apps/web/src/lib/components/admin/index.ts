@@ -18,12 +18,26 @@ export { default as QueueTable } from './QueueTable.svelte';
 export { default as ReviewActions } from './ReviewActions.svelte';
 export { default as RegisterProvider } from './RegisterProvider.svelte';
 export { default as ReviewContext } from './ReviewContext.svelte';
+export { default as SettingForm } from './SettingForm.svelte';
+export { default as SettingHistory } from './SettingHistory.svelte';
+export { default as SettingsFilters } from './SettingsFilters.svelte';
+export { default as SettingsList } from './SettingsList.svelte';
+export { default as UserAccountActivity } from './UserAccountActivity.svelte';
+export { default as UserActions } from './UserActions.svelte';
+export { default as UserFilters } from './UserFilters.svelte';
+export { default as UserList } from './UserList.svelte';
+export { default as UserTable } from './UserTable.svelte';
 
 export type {
+  AccountActivity,
+  SettingActionResult,
+  SettingsListResult,
   FraudActionResult,
   HeldQueueResult,
   ProviderActionResult,
   ProviderResult,
   QueueResult,
   ReviewResult,
+  UserActionResult,
+  UserListResult,
 } from './types';
