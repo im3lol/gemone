@@ -1,4 +1,4 @@
-import type { UserProfile, UserRole, UserStatus } from './auth';
+import type { UserProfile, UserRole, UserStatus } from './auth.js';
 
 /**
  * Administration contracts.

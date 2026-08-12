@@ -9,6 +9,8 @@
  * in `$lib/admin/payout-queue.ts`, which mirrors the server's state machine,
  * and behind it in `payout-state-machine.ts`, which is the authority.
  */
+export { default as HeldConversion } from './HeldConversion.svelte';
+export { default as HeldQueue } from './HeldQueue.svelte';
 export { default as PayoutQueue } from './PayoutQueue.svelte';
 export { default as ProviderCard } from './ProviderCard.svelte';
 export { default as ProviderList } from './ProviderList.svelte';
@@ -18,6 +20,8 @@ export { default as RegisterProvider } from './RegisterProvider.svelte';
 export { default as ReviewContext } from './ReviewContext.svelte';
 
 export type {
+  FraudActionResult,
+  HeldQueueResult,
   ProviderActionResult,
   ProviderResult,
   QueueResult,

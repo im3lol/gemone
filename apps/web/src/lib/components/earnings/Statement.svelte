@@ -16,10 +16,10 @@
 -->
 <script lang="ts">
   import Receipt from '@lucide/svelte/icons/receipt';
-  import type { RewardTransactionType } from '@gemone/contracts';
+  import type { RewardStatus, RewardTransactionType } from '@gemone/contracts';
 
   import { Button, Card, EmptyState, ErrorState, Pager, Skeleton } from '$lib/components/ui';
-  import { describe } from '$lib/rewards/ledger';
+  import { describe, statusLabel } from '$lib/rewards/ledger';
 
   import StatementFilter from './StatementFilter.svelte';
   import StatementTable from './StatementTable.svelte';
@@ -30,15 +30,28 @@
     now: string;
     offset: number;
     pageSize: number;
-    /** The active filter, or `''` for everything. */
+    /** The active type filter, or `''` for everything. */
     type: RewardTransactionType | '';
-    /** The current query string, so the pager can preserve the filter. */
+    /** The active status filter, or `''` for everything. */
+    status: RewardStatus | '';
+    /** The current query string, so the pager can preserve the filters. */
     query: string;
   };
 
-  let { statement, now, offset, pageSize, type, query }: Props = $props();
+  let { statement, now, offset, pageSize, type, status, query }: Props = $props();
 
   const params = $derived(new URLSearchParams(query));
+
+  /*
+   * What the user asked for, in the words the controls used.
+   *
+   * Named rather than described generically, because "no results" and "no
+   * results *for this*" are answered differently: the second one tells someone
+   * which control to change.
+   */
+  const applied = $derived(
+    [type ? describe(type) : '', status ? statusLabel(status) : ''].filter(Boolean),
+  );
 </script>
 
 <Card as="section" padding="lg" aria-labelledby="statement-title">
@@ -48,7 +61,7 @@
       <p class="gm-subtitle mt-1">Every movement on your balance, newest first.</p>
     </div>
 
-    <StatementFilter value={type} />
+    <StatementFilter {type} {status} />
   </div>
 
   <div class="mt-5">
@@ -69,11 +82,11 @@
           title="Your statement could not be loaded"
           description="Your balance above is up to date. Refresh the page to try the statement again."
         />
-      {:else if result.items.length === 0 && type}
+      {:else if result.items.length === 0 && applied.length > 0}
         <EmptyState
           icon={Receipt}
-          title="No {describe(type).toLowerCase()} movements"
-          description="Nothing on your balance matches this filter yet."
+          title="No movements match this filter"
+          description="Your statement has nothing under {applied.join(' and ')}."
         >
           {#snippet action()}
             <Button href="/earnings" variant="secondary" size="sm">Show all movements</Button>

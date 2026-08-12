@@ -1,4 +1,13 @@
-import type { RewardTransactionRecord, RewardTransactionType } from '@gemone/contracts';
+import {
+  REWARD_STATUSES_IN_ORDER,
+  REWARD_TRANSACTION_TYPES,
+  rewardStatusOf,
+} from '@gemone/contracts';
+import type {
+  RewardStatus,
+  RewardTransactionRecord,
+  RewardTransactionType,
+} from '@gemone/contracts';
 
 /**
  * Turning a ledger record into something a person can read.
@@ -18,19 +27,12 @@ import type { RewardTransactionRecord, RewardTransactionType } from '@gemone/con
  * `StatementTable` does it — but it is why `describe` says only what *kind* of
  * thing happened.
  *
- * ## Why the type names are written out rather than imported
- *
- * `@gemone/contracts` also exports `REWARD_TRANSACTION_TYPES`, a runtime
- * object, and importing it here **fails the production build**: the package
- * compiles to CommonJS and re-exports every module through `__exportStar`,
- * which Rollup cannot trace named values through when bundling this app's SSR
- * output. `svelte-check` and Vitest both resolve it happily, so the failure
- * arrives only at `vite build` — measured, not assumed. Recorded as TODO T79.
- *
- * Writing the literals costs nothing in safety. `Record<RewardTransactionType,
- * …>` is what actually guarantees these maps stay in step with the contract: a
- * new transaction type there is a compile error here, and a misspelt key is a
- * compile error too.
+ * The keys below are still written out as literals rather than computed from
+ * `REWARD_TRANSACTION_TYPES`, and that is not the old T79 workaround — it is
+ * how `Record<RewardTransactionType, …>` earns its keep. A type added to the
+ * contract becomes a compile error here, which is what forces someone to
+ * *decide* what to call it. A map built by iterating the enum would silently
+ * grow a row labelled with its own enum name.
  */
 
 /** How a `Badge` should be toned for a derived status. */
@@ -84,15 +86,16 @@ const GLYPHS: Record<RewardTransactionType, string> = {
 };
 
 /**
- * Every transaction type this module knows how to present.
+ * Every transaction type, from the contract itself.
  *
- * Derived from the map rather than written a third time, and correct by
- * construction: `Record<RewardTransactionType, …>` refuses a missing key and
- * an object literal refuses an extra one, so this array *is* the contract's
- * set. It exists so the tests can walk it — the alternative is a fourth copy
- * of the list that can rot.
+ * `Object.keys(LABELS) as RewardTransactionType[]` is what this was while the
+ * contracts package could not be imported for a value — an assertion that the
+ * compiler took on trust, because `Object.keys` returns `string[]` no matter
+ * what it is given. Reading the enum directly needs no cast: the array *is*
+ * the contract's set, and the `Record` above still fails the build if a label
+ * is missing for one of them.
  */
-export const LEDGER_TYPES = Object.keys(LABELS) as RewardTransactionType[];
+export const LEDGER_TYPES: RewardTransactionType[] = Object.values(REWARD_TRANSACTION_TYPES);
 
 /**
  * The fallbacks exist because the type is a wire value.
@@ -111,58 +114,55 @@ export function glyph(type: RewardTransactionType): string {
 }
 
 /**
+ * What each derived status is called, and how it is toned.
+ *
+ * The *rule* — which type and which bucket delta make a movement "Pending" —
+ * lives in `@gemone/contracts`, because the API filters on it and a rule the
+ * two sides each wrote for themselves is a rule they can disagree about
+ * (TODO T80). What is left here is the vocabulary, which is this module's
+ * business: `IN_REVIEW` is the domain's word and "In review" is the user's.
+ */
+const STATUSES: Record<RewardStatus, LedgerStatus> = {
+  PENDING: { label: 'Pending', tone: 'warning' },
+  AVAILABLE: { label: 'Available', tone: 'success' },
+  CLEARED: { label: 'Cleared', tone: 'success' },
+  REVERSED: { label: 'Reversed', tone: 'error' },
+  IN_REVIEW: { label: 'In review', tone: 'info' },
+  PAID: { label: 'Paid', tone: 'success' },
+  RETURNED: { label: 'Returned', tone: 'neutral' },
+  /*
+   * An admin moved points by hand. It can add or remove, into any bucket, so
+   * the status says only that a person did it — the amount's sign says which
+   * way, and `reason` (mandatory on this type) says why.
+   */
+  ADJUSTED: { label: 'Adjusted', tone: 'neutral' },
+};
+
+/** Every status, in the order the filter lists them. */
+export const LEDGER_STATUSES: RewardStatus[] = REWARD_STATUSES_IN_ORDER;
+
+export function statusLabel(status: RewardStatus): string {
+  return STATUSES[status]?.label ?? 'Recorded';
+}
+
+/**
  * Which bucket these points are in **now**, derived from the record alone.
  *
- * The rules, and why each is what it is:
+ * The derivation is `rewardStatusOf` in the contract — the same function the
+ * API's `where` clause is built from, so a row shown as "Pending" here is a row
+ * `?status=PENDING` returns. Before T80 this was a `switch` in this file and
+ * the API had no opinion at all, which is exactly why the filter could not be
+ * server-side.
  *
- * - A credit that landed in `pending` is *Pending* — points exist but are
- *   inside the hold period. `maturesAt === null` means held indefinitely
- *   (ARCHITECTURE.md §9.4), which is still pending, not "never".
- * - A credit that landed straight in `available` is *Available*. That happens
- *   when the resolved hold period is zero.
- * - A maturation moved points between buckets and earned nobody anything; its
- *   amount is `0` and its status is *Cleared*.
- * - The three payout movements say what happened to a withdrawal.
- *
- * Nothing here consults the clock. A pending credit whose `maturesAt` has
- * passed is still shown as pending until a maturation transaction exists,
- * because the maturation is what actually moves the points — and a status that
- * disagreed with the balance would be the more confusing of the two lies.
+ * `null` — a type this build has never heard of — becomes "Recorded". The
+ * fallback stays because the type is a wire value: a newer server, a replayed
+ * record. Rendering "undefined" into a table of someone's money is the
+ * alternative.
  */
 export function statusOf(record: RewardTransactionRecord): LedgerStatus {
-  switch (record.type) {
-    case 'CONVERSION_CREDIT':
-    case 'BONUS':
-      return record.pendingDelta > 0
-        ? { label: 'Pending', tone: 'warning' }
-        : { label: 'Available', tone: 'success' };
+  const status = rewardStatusOf(record);
 
-    case 'REWARD_MATURATION':
-      return { label: 'Cleared', tone: 'success' };
-
-    case 'CHARGEBACK_DEBIT':
-      return { label: 'Reversed', tone: 'error' };
-
-    case 'PAYOUT_LOCK':
-      return { label: 'In review', tone: 'info' };
-
-    case 'PAYOUT_SETTLE':
-      return { label: 'Paid', tone: 'success' };
-
-    case 'PAYOUT_REFUND':
-      return { label: 'Returned', tone: 'neutral' };
-
-    /*
-     * An admin moved points by hand. It can add or remove, into any bucket,
-     * so the status says only that a person did it — the amount's sign says
-     * which way, and `reason` (mandatory on this type) says why.
-     */
-    case 'MANUAL_ADJUSTMENT':
-      return { label: 'Adjusted', tone: 'neutral' };
-
-    default:
-      return { label: 'Recorded', tone: 'neutral' };
-  }
+  return (status && STATUSES[status]) ?? { label: 'Recorded', tone: 'neutral' };
 }
 
 /**

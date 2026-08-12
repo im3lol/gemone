@@ -10,7 +10,7 @@
  * *execution* sits behind its own interface (§11.4) so an automated provider
  * slots in without touching either reward accounting or this state machine.
  */
-import type { UserFraudSignals } from './fraud';
+import type { UserFraudSignals } from './fraud.js';
 
 /**
  * The withdrawal lifecycle — §11.1.

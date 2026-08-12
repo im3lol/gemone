@@ -186,9 +186,145 @@ export interface RewardTransactionRecord {
   createdAt: string;
 }
 
+/**
+ * Where a movement's points **are now** — TODO T80.
+ *
+ * A second axis over the same rows, and the one people actually ask about:
+ * "what is still pending?" is a question about the statement's status column,
+ * not about its type column. `CONVERSION_CREDIT` is one type and two answers,
+ * because a credit lands in `pending` or in `available` depending on the hold
+ * period that applied to it.
+ *
+ * **It describes the movement, not the money.** A credit that has since
+ * matured still reads `PENDING`, because that is where *it* put the points;
+ * the `CLEARED` maturation beside it is the row that moved them. A statement
+ * is a list of events, and an event does not change after it happened.
+ *
+ * **Not a stored column, and deliberately so.** It is a view over the type and
+ * the bucket deltas, which are the facts. Adding a column would mean a status
+ * that could disagree with the deltas underneath it — and the deltas are what
+ * reconciliation sums.
+ *
+ * It lives in the contract rather than in either application because both need
+ * it and they need it to mean the same thing: the API filters on it, the web
+ * renders it. See `REWARD_STATUS_RULES` for how one definition does both.
+ */
+export const REWARD_STATUSES = {
+  /** A credit that landed in `pending`, because a hold period applied to it. */
+  PENDING: 'PENDING',
+  /** A credit that landed straight in `available` — the hold resolved to zero. */
+  AVAILABLE: 'AVAILABLE',
+  /** A hold elapsed and the points moved from `pending` to `available`. */
+  CLEARED: 'CLEARED',
+  /** A chargeback took a credit back. */
+  REVERSED: 'REVERSED',
+  /** Reserved by a withdrawal that is still being decided. */
+  IN_REVIEW: 'IN_REVIEW',
+  /** A withdrawal was settled. */
+  PAID: 'PAID',
+  /** A withdrawal was rejected or failed, and the points came back. */
+  RETURNED: 'RETURNED',
+  /** An administrator moved points by hand. */
+  ADJUSTED: 'ADJUSTED',
+} as const;
+
+export type RewardStatus = (typeof REWARD_STATUSES)[keyof typeof REWARD_STATUSES];
+
+/**
+ * What makes a row that status — written as **data, not as a function body**.
+ *
+ * This is the shape that lets one definition serve both sides. A predicate can
+ * only be run over rows already fetched, which is the client-side filter T80
+ * refused: twenty rows fetched, four shown, "1–20 of 28" printed above them.
+ * A rule that is data can also be *translated* — the API turns each one into a
+ * `where` clause and filters and counts in the database, so the pager's total
+ * is the filtered total.
+ *
+ * The rules are disjoint and cover all eight transaction types, which is what
+ * makes `rewardStatusOf` total and the translation lossless. Both properties
+ * are asserted by tests on either side rather than assumed here.
+ */
+export interface RewardStatusRule {
+  /** The transaction types that can carry this status. */
+  types: readonly RewardTransactionType[];
+
+  /**
+   * The constraint on `pendingDelta`, where the type alone is not enough.
+   *
+   * Only credits need it, and only because "did this land in pending" is the
+   * whole difference between `PENDING` and `AVAILABLE`.
+   */
+  pendingDelta?: 'positive' | 'nonPositive';
+}
+
+const CREDIT_TYPES = [
+  REWARD_TRANSACTION_TYPES.CONVERSION_CREDIT,
+  REWARD_TRANSACTION_TYPES.BONUS,
+] as const;
+
+export const REWARD_STATUS_RULES: Readonly<Record<RewardStatus, RewardStatusRule>> = {
+  PENDING: { types: CREDIT_TYPES, pendingDelta: 'positive' },
+  AVAILABLE: { types: CREDIT_TYPES, pendingDelta: 'nonPositive' },
+  CLEARED: { types: [REWARD_TRANSACTION_TYPES.REWARD_MATURATION] },
+  REVERSED: { types: [REWARD_TRANSACTION_TYPES.CHARGEBACK_DEBIT] },
+  IN_REVIEW: { types: [REWARD_TRANSACTION_TYPES.PAYOUT_LOCK] },
+  PAID: { types: [REWARD_TRANSACTION_TYPES.PAYOUT_SETTLE] },
+  RETURNED: { types: [REWARD_TRANSACTION_TYPES.PAYOUT_REFUND] },
+  ADJUSTED: { types: [REWARD_TRANSACTION_TYPES.MANUAL_ADJUSTMENT] },
+};
+
+export const REWARD_STATUSES_IN_ORDER: RewardStatus[] = Object.keys(
+  REWARD_STATUS_RULES,
+) as RewardStatus[];
+
+/**
+ * The status of one movement, by the same rules the API filters with.
+ *
+ * Takes the two fields the rules read rather than a whole record, so a caller
+ * holding a database row can ask without building a wire object first.
+ *
+ * Returns `null` for a type this build has never heard of — a newer server, a
+ * replayed record. A closed union with a silent fallback would put a wrong
+ * word beside somebody's money; `null` makes the caller say what it does about
+ * not knowing.
+ *
+ * **Nothing here consults a clock.** A pending credit whose `maturesAt` has
+ * passed is still pending until a `REWARD_MATURATION` row exists, because that
+ * row is what actually moved the points. A status that ran ahead of the
+ * balance would be the more confusing of the two disagreements.
+ */
+export function rewardStatusOf(movement: {
+  type: RewardTransactionType;
+  pendingDelta: number;
+}): RewardStatus | null {
+  for (const status of REWARD_STATUSES_IN_ORDER) {
+    const rule = REWARD_STATUS_RULES[status];
+
+    if (!rule.types.includes(movement.type)) continue;
+    if (rule.pendingDelta === 'positive' && !(movement.pendingDelta > 0)) continue;
+    if (rule.pendingDelta === 'nonPositive' && movement.pendingDelta > 0) continue;
+
+    return status;
+  }
+
+  return null;
+}
+
 /** A page of statement entries as the owning user sees them. */
 export interface RewardHistoryQuery {
   type?: RewardTransactionType;
+
+  /**
+   * Filters on the derived status — see `REWARD_STATUSES`.
+   *
+   * Independent of `type`, and combinable with it: the two are different
+   * questions about the same row. Asking for both narrows to their
+   * intersection, which is empty for an impossible pair such as
+   * `type=PAYOUT_SETTLE&status=PENDING` — the honest answer, and one the
+   * database gives without special-casing.
+   */
+  status?: RewardStatus;
+
   limit?: number;
   offset?: number;
 }

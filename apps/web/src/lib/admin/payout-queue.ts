@@ -1,3 +1,4 @@
+import { PAYOUT_STATUSES } from '@gemone/contracts';
 import type { PayoutStatus } from '@gemone/contracts';
 
 /**
@@ -12,13 +13,9 @@ import type { PayoutStatus } from '@gemone/contracts';
  * Two vocabularies for one enum is not duplication; it is the reason the enum
  * is not a label.
  *
- * ## Why the status names are written out rather than imported
- *
- * `@gemone/contracts` exports `PAYOUT_STATUSES` as a runtime object and
- * importing it breaks `vite build` — the package compiles to CommonJS and
- * re-exports through `__exportStar`, which Rollup cannot trace named values
- * through (TODO T79). `Record<PayoutStatus, …>` is what keeps these maps in
- * step with the contract regardless.
+ * The map keys stay literal so `Record<PayoutStatus, …>` can refuse an
+ * incomplete map: a status added to the state machine has to be given an
+ * admin's word for it here before this compiles.
  */
 
 /** A `Badge` variant. Restated rather than imported, so this module depends on nothing. */
@@ -59,7 +56,7 @@ const STATES: Record<PayoutStatus, QueueState> = {
   },
 };
 
-export const PAYOUT_STATUSES_IN_QUEUE_ORDER = Object.keys(STATES) as PayoutStatus[];
+export const PAYOUT_STATUSES_IN_QUEUE_ORDER: PayoutStatus[] = Object.values(PAYOUT_STATUSES);
 
 /**
  * The fallback exists because the status is a wire value — a newer server, a

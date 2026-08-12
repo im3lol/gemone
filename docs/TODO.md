@@ -1971,7 +1971,7 @@ screens quote money is a product one.
 ---
 
 ### T79 — `@gemone/contracts` runtime values cannot be imported by `web`
-**Status:** open · **Raised:** UI phase 4 (dashboard)
+**Status:** RESOLVED in UI phase 10 · **Raised:** UI phase 4 (dashboard)
 
 The package compiles to CommonJS and re-exports every module through
 `__exportStar`. Rollup cannot trace named *values* through that when bundling
@@ -2013,10 +2013,26 @@ out not to: `LEDGER_TYPES` in `$lib/rewards/ledger.ts` is derived from a
 the compiler, with no runtime import. Changing a package three applications
 build against to avoid an import nothing needs would be the wrong trade.
 
+**Resolved in phase 10 — the dual build this entry described.** See D90. The
+reproduction was run first and failed exactly as recorded, then the package was
+given an `exports` map with an ESM entry for `import` and the existing CommonJS
+one for `require`, and the same probe built. Every workaround site was undone:
+five `$lib` modules now import the constant they were spelling out, and three
+`Object.keys(…) as X[]` casts — which the compiler took on trust, because
+`Object.keys` returns `string[]` whatever it is given — became
+`Object.values(THE_ENUM)`, which needs no cast at all.
+
+The regression guard is `packages/contracts/test/packaging.test.mjs`, run by
+`node --test` rather than Vitest deliberately: Vitest brings its own module
+resolution, and resolution is the thing under test. It loads `dist` both ways
+and asserts the ESM entry re-exports statically with resolvable specifiers —
+the property a bundler needs, which no behavioural test can see because Node
+interoperates with CommonJS perfectly well.
+
 ---
 
 ### T80 — The statement cannot filter by status
-**Status:** open · **Raised:** UI phase 5 (earnings)
+**Status:** RESOLVED in UI phase 10 · **Raised:** UI phase 5 (earnings)
 
 `/earnings` filters by transaction *type*, because `GET /rewards/history` takes
 `type`, `limit` and `offset` and nothing else. It does not filter by **status**
@@ -2039,6 +2055,24 @@ status parameter.
 **Trigger:** whenever the statement has enough rows for the type filter to stop
 being sufficient, or the first support ticket that asks "which of these is
 still pending".
+
+**Resolved in phase 10, and not by the cheaper option.** See D91. The named
+filters this entry proposed were rejected once the real objection was isolated:
+the problem is not that a status filter is hard, it is that the derivation
+would exist twice — once as the rule the UI renders, once as a `where` clause —
+in two languages that can drift.
+
+So the derivation moved into `@gemone/contracts` and was written **as data**.
+`REWARD_STATUS_RULES` says which types carry a status and what constraint the
+`pendingDelta` is under; `rewardStatusOf` reads it to decide a row's status and
+`whereForStatus` reads it to select rows. Neither contains the list, so neither
+can disagree about it — and a unit test walks every (type, delta) combination
+asserting the clause selects exactly what the function would derive.
+
+Filtering in the database is also what makes the count honest: `findMany` and
+`count` take the same `where`, so the pager's total is the filtered total. That
+was the specific failure this entry named — "1–20 of 28" printed over a list of
+four — and it is now structurally impossible rather than avoided.
 
 ---
 

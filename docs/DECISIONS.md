@@ -2677,3 +2677,146 @@ talking to" that P1 forbids. It was to notice that
 `ProviderRegistration`, which has carried `displayName` all along. The map now
 holds both fields instead of one. No join, no query, no request per offer — and
 the transform in the browser is deleted rather than corrected.
+
+## D90 — The contracts package ships both module formats, not one
+
+**Context.** `@gemone/contracts` compiled to CommonJS only, and TypeScript's
+`export *` becomes `__exportStar(require("./rewards"), exports)` — a loop that
+copies properties at *runtime*. Rollup, bundling the SvelteKit SSR output, has
+nothing statically nameable to trace, so `import { REWARD_TRANSACTION_TYPES }`
+failed `vite build` with *"not exported by …/dist/index.js"*. TODO T79 carried
+that for six phases behind a workaround: every `$lib` module wrote the enum
+members as string literals inside a `Record<Union, …>` map.
+
+**The failure's location was the real cost.** `svelte-check` resolved it,
+Vitest resolved it, `vite dev` resolved it. Only the production build did not,
+so it was a lint-clean, test-clean change that broke the release build. The
+workaround was safe — `Record<Union, …>` still rejects a missing or misspelt
+key — but it was safe for a reason nobody could see from the code.
+
+**Decision.** Two `tsc` passes and an `exports` map. `dist/cjs` keeps the
+existing CommonJS output for the NestJS API and the worker, which `require` it;
+`dist/esm` is the same source emitted as ES modules for anything that
+`import`s it. Declarations are emitted once by the CommonJS pass, because both
+builds describe the same types and a second copy is only something for the
+`types` condition to disagree with.
+
+Two details make it work rather than nearly work:
+
+- **Relative specifiers carry `.js` in the source.** TypeScript never rewrites
+  a module specifier, so an extensionless `'./rewards'` reaches the ESM output
+  verbatim — and Node's ESM resolver, unlike CommonJS's, does not guess
+  extensions. Writing the extension in the source is what lets one set of files
+  emit correctly as both.
+- **Each output directory is marked.** `tsc` writes JavaScript and nothing
+  else; Node decides a `.js` file's format from the nearest `package.json`, and
+  the nearest one to `dist/esm` would be the package's own, which is CommonJS.
+  A generated one-line marker per directory settles it.
+
+**Why not `tsup`, or bundling.** Both were available and neither is needed. The
+package is type declarations and frozen `as const` objects — there is nothing
+to bundle, no dependency to resolve, and no minification worth doing. Two
+compiler invocations add one devDependency's worth of behaviour with zero
+devDependencies.
+
+**Rejected: leaving it and extending the workaround.** It was the standing
+answer, and phase 10 needed a contract constant in the browser twice over — the
+status rules T80 wanted shared, and the review decisions the fraud screen posts.
+At that point the workaround stops being a small quiet cost and starts being
+the reason two applications cannot agree on a rule.
+
+**The regression guard tests the build output, not the source.** Every other
+test in the repository imports the package from TypeScript through a resolver
+happy to reach past its entry points — which is precisely why the defect
+survived. `packages/contracts/test/packaging.test.mjs` loads `dist` with
+`require` and with `import`, and asserts on the emitted ESM text that its
+re-exports are static and its specifiers resolvable. That last assertion looks
+odd and is the important one: switch `module` back to `commonjs` and a
+behavioural test still passes, because Node interoperates with CommonJS fine.
+Only a bundler notices, and only in a release build.
+
+## D91 — The derived status is filtered in SQL, from a rule written as data
+
+**Context.** TODO T80: `/earnings` could filter by transaction *type* but not
+by status — Pending, Cleared, Reversed, In review — which is the axis users
+actually ask about. Status is *derived*, in `$lib/rewards/ledger.ts`, from a
+movement's type and its bucket deltas. There is no column.
+
+**The objection, stated precisely.** Not that filtering a derived value is
+hard. That doing it means writing the derivation twice — once as the rule the
+UI renders, once as a `where` clause — in two languages, where the copies can
+drift and the drift is invisible until someone notices a row missing from a
+filter that should contain it.
+
+**Decision.** Move the derivation into `@gemone/contracts` and write it as
+**data**: `REWARD_STATUS_RULES` maps each status to the transaction types that
+can carry it and the constraint its `pendingDelta` is under. Two mechanical
+readers follow. `rewardStatusOf` walks the rules to decide one row's status;
+`whereForStatus` translates one rule into a Prisma clause. Neither contains the
+list of types, so neither can disagree about it.
+
+A rule expressed as a predicate would not have worked. A predicate can only be
+run over rows already fetched, which is exactly the client-side filter this
+entry refused. A rule expressed as data can also be *translated*.
+
+**Rejected: named filters.** T80 proposed exposing "credits still pending" and
+"movements that took points back" as two named endpoints rather than a general
+status parameter, on the grounds that it avoids the duplication. It does — by
+answering two of the eight questions. Once the duplication is solved properly
+the general parameter is no more code than the special cases, and it does not
+need extending the next time somebody asks about a different bucket.
+
+**What filtering in the database bought, beyond correctness.** `findMany` and
+`count` take the same `where`, so the pager's total is the filtered total. The
+specific failure T80 named — twenty rows fetched, four shown, "1–20 of 28"
+printed above them — is now structurally impossible rather than avoided.
+
+**The status describes the movement, not the money.** A credit that has since
+matured still reads `PENDING`: that is where *it* put the points, and the
+`CLEARED` maturation beside it is the row that moved them. A statement is a
+list of events and an event does not change after it happened. Stated in the
+contract because it is the kind of thing that reads as a bug once a year.
+
+## D92 — The fraud screen shows the score and refuses to grade it
+
+**Context.** PROJECT.md §4.7 holds high-risk conversions rather than rejecting
+them, because *"rejecting legitimate users is more expensive than a short
+hold"*. That is only the recoverable direction if somebody can recover it, and
+until phase 10 the API could fill the queue and nothing could empty it — the
+failure TODO T29 named "not the design".
+
+**Decision.** One screen, `/admin/fraud`: the held queue oldest-first, each
+entry carrying what the engine recorded, and the two decisions the API accepts.
+Nothing else.
+
+**No risk bands, and this is the load-bearing decision.** The obvious design
+gives each card a High / Medium / Low badge. `AdminHeldConversionSummary`
+carries a `fraudScore` and nothing that says what a high one is — thresholds
+are configured per rule (P3) and snapshotted onto each evaluation, so a band
+drawn in a Svelte component would be a threshold that file invented: a fraud
+rule, in a presentation module, that no configuration could change and no audit
+trail would record. The score is shown as the number it is, beside the rules
+that produced it, which is what an operator reasons about anyway.
+
+**A missing score is its own badge.** Null is not zero. §10.3 step 3 holds an
+inactive account before any rule runs, and a scoring failure leaves the
+conversion unscored deliberately — so "Not scored" is shown where a zero would
+have read as "scored, and clean", which is the opposite of what happened.
+
+**What the card does not show, and why.** No email, no IP address, no device
+fingerprint. The rules that fired *name* those signals — "Accounts sharing this
+IP address" — and the operator is deciding whether the engine was right, which
+the count answers and the raw value does not. Putting a user's IP into a queue
+response is a decision to make deliberately if it is ever needed, not a side
+effect of laying out a card.
+
+**Two buttons, not three.** There is no "leave for later", because that is what
+happens when nobody presses either, and no "escalate", because the API has no
+such transition. A control that posts something the server will refuse teaches
+an operator to distrust the screen.
+
+**Concurrency is the server's, as everywhere else.** Two admins deciding the
+same hold both see both buttons; the second gets a 409 — *"This conversion is
+credited and has no hold to resolve"* — because `resolveHold` re-reads the row
+`FOR UPDATE` inside the transaction that moves the points. The disabled buttons
+during submission are courtesy. Verified by posting the same decision twice.

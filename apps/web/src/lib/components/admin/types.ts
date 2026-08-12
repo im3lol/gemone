@@ -1,4 +1,5 @@
 import type {
+  AdminHeldConversionSummary,
   AdminPayoutSummary,
   ProviderSummary,
   SyncRunSummary,
@@ -55,3 +56,26 @@ export type ProviderResult =
 export type ProviderActionResult =
   | { ok: true; action: 'enable' | 'disable' | 'sync' | 'register'; message: string }
   | { ok: false; action: string; message: string };
+
+/**
+ * What the streamed fraud queue resolves to.
+ *
+ * **A result, not a rejection** — D83, for the reason `QueueResult` records: an
+ * endpoint having a bad minute should not log an administrator out of the tool
+ * they are investigating with.
+ */
+export type HeldQueueResult =
+  | { ok: true; items: AdminHeldConversionSummary[]; total: number }
+  | { ok: false };
+
+/**
+ * What a fraud decision hands back.
+ *
+ * Carries the `conversionId` because the queue shows several cards at once and
+ * a message with no subject would appear under whichever card the reader
+ * happened to be looking at. A success has no card left to sit on — the hold is
+ * resolved and gone from the list — so it is announced above the queue.
+ */
+export type FraudActionResult =
+  | { ok: true; action: 'clear' | 'confirm'; conversionId: string; message: string }
+  | { ok: false; action: string; conversionId: string; message: string };

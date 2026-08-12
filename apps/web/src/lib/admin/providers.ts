@@ -1,4 +1,5 @@
-import type { ProviderHealthState, SyncOutcome } from '@gemone/contracts';
+import { SYNC_MODES } from '@gemone/contracts';
+import type { ProviderHealthState, SyncMode, SyncOutcome } from '@gemone/contracts';
 
 /**
  * The provider screen's vocabulary — ARCHITECTURE.md §7.
@@ -8,13 +9,9 @@ import type { ProviderHealthState, SyncOutcome } from '@gemone/contracts';
  * an operator screen that branched on a slug would be the exact branch §5 rule
  * 7 forbids.
  *
- * ## Why the state names are written out rather than imported
- *
- * `@gemone/contracts` exports `PROVIDER_HEALTH_STATES` and `SYNC_OUTCOMES` as
- * runtime objects, and importing either breaks `vite build` — the package
- * compiles to CommonJS and re-exports through `__exportStar`, which Rollup
- * cannot trace named values through (TODO T79). `Record<…, …>` keeps these
- * maps in step with the contract regardless.
+ * The state maps are keyed by literals so their `Record<…, …>` types can
+ * refuse an incomplete map — a new health state or sync outcome has to be
+ * given an operator's sentence before this compiles.
  */
 
 /** A `Badge` variant. Restated rather than imported, so this module depends on nothing. */
@@ -117,10 +114,10 @@ export function capabilityLabel(capability: string): string {
   return CAPABILITIES[capability] ?? capability.replaceAll('_', ' ');
 }
 
-/** The two sync modes, and the difference that actually matters. */
-export const SYNC_MODES_IN_ORDER = ['INCREMENTAL', 'FULL'] as const;
+/** The sync modes the contract defines, and the difference that actually matters. */
+export const SYNC_MODES_IN_ORDER: SyncMode[] = Object.values(SYNC_MODES);
 
-export type SyncModeChoice = (typeof SYNC_MODES_IN_ORDER)[number];
+export type SyncModeChoice = SyncMode;
 
 const MODES: Record<SyncModeChoice, { label: string; hint: string }> = {
   INCREMENTAL: {

@@ -13,14 +13,9 @@ import type { PayoutStatus } from '@gemone/contracts';
  * itself enforces. This module multiplies and formats; it never supplies a
  * default for a value the server did not send.
  *
- * ## Why the status names are written out rather than imported
- *
- * `@gemone/contracts` exports `PAYOUT_STATUSES` as a runtime object, and
- * importing it breaks `vite build` — the package compiles to CommonJS and
- * re-exports through `__exportStar`, which Rollup cannot trace named values
- * through (TODO T79, re-confirmed in phase 5). `Record<PayoutStatus, …>` is
- * what keeps these maps honest anyway: a status added to the contract is a
- * compile error here, and a misspelt one is too.
+ * The status map is keyed by literals so `Record<PayoutStatus, …>` can refuse
+ * an incomplete one: a status added to the contract is a compile error here
+ * until someone decides what to tell the person waiting for the money.
  */
 
 /** A `Badge` variant. Restated rather than imported, so this module depends on nothing. */

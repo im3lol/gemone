@@ -1,7 +1,12 @@
-import type { Paginated, RewardTransactionRecord, RewardTransactionType } from '@gemone/contracts';
+import type {
+  Paginated,
+  RewardStatus,
+  RewardTransactionRecord,
+  RewardTransactionType,
+} from '@gemone/contracts';
 
 import type { StatementResult } from '$lib/components/earnings';
-import { LEDGER_TYPES } from '$lib/rewards/ledger';
+import { LEDGER_STATUSES, LEDGER_TYPES } from '$lib/rewards/ledger';
 import { apiAuthedJson } from '$lib/server/api';
 import { nowIso } from '$lib/time';
 import type { PageServerLoad } from './$types';
@@ -31,24 +36,29 @@ const PAGE_SIZE = 20;
  * The session is still the layout's business: if `/users/me` fails there, the
  * redirect happens there, before this runs.
  *
- * ## The runtime constant this file does not import
+ * ## Two filters, both on the API
  *
- * `LEDGER_TYPES` comes from `$lib/rewards/ledger`, not
- * `REWARD_TRANSACTION_TYPES` from `@gemone/contracts`. The latter still breaks
- * the production build (TODO T79, re-confirmed this phase: `vite build` fails
- * with *"not exported by packages/contracts/dist/index.js"* while
- * `svelte-check`, Vitest and `vite dev` all resolve it). `LEDGER_TYPES` is
- * derived from a `Record<RewardTransactionType, …>`, so it is the contract's
- * set, checked by the compiler, with no runtime import.
+ * `type` is what a movement *was*; `status` is where its points are *now*
+ * (TODO T80). Both are forwarded to `GET /rewards/history` and neither is
+ * applied here — a filter applied after the fetch would page through twenty
+ * rows, show four, and print "1–20 of 28" above them. Because the API filters
+ * and counts with the same `where`, `total` is the filtered total and the
+ * pager is right.
+ *
+ * They combine, and an impossible pair such as a paid withdrawal that is still
+ * pending returns nothing. That is the correct answer, and the panel already
+ * has a state that says so.
  */
 export const load: PageServerLoad = (event) => {
   const { url } = event;
 
   const type = readType(url.searchParams.get('type'));
+  const status = readStatus(url.searchParams.get('status'));
   const offset = readOffset(url.searchParams.get('offset'));
 
   const query = new URLSearchParams({ limit: String(PAGE_SIZE) });
   if (type) query.set('type', type);
+  if (status) query.set('status', status);
   if (offset > 0) query.set('offset', String(offset));
 
   const statement: Promise<StatementResult> = apiAuthedJson<Paginated<RewardTransactionRecord>>(
@@ -61,18 +71,37 @@ export const load: PageServerLoad = (event) => {
   return {
     statement,
     type,
+    status,
     offset,
     pageSize: PAGE_SIZE,
-    /** What the pager must preserve. The page's own params, not the API's. */
-    query: url.search,
+    /**
+     * What the pager must preserve — the *sanitised* filters, not `url.search`.
+     *
+     * `?status=nonsense` is dropped by `readStatus`, and a pager that copied
+     * the raw query string would carry it onto page two, where it would be
+     * dropped again. Rebuilding from what was actually applied means the
+     * links always describe the page they lead to.
+     */
+    query: pageQuery({ type, status }),
     now: nowIso(),
   };
 };
 
+/** The page's own parameters, as the pager and the filter form should carry them. */
+function pageQuery(filters: { type: string; status: string }): string {
+  const params = new URLSearchParams();
+
+  if (filters.type) params.set('type', filters.type);
+  if (filters.status) params.set('status', filters.status);
+
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
 /**
  * Only a type the UI knows about survives.
  *
- * `?type=DROP+TABLE` reaching the API would be answered with a 400 and turn
+ * `?type=DROP+TABLE` reaching the API would be answered with a 422 and turn
  * into the statement's error state — a filter nobody chose, failing a page
  * that works. `LEDGER_TYPES` is the same list the filter renders, so it cannot
  * drift from what the dropdown offers.
@@ -83,9 +112,23 @@ function readType(raw: string | null): RewardTransactionType | '' {
   return LEDGER_TYPES.includes(raw as RewardTransactionType) ? (raw as RewardTransactionType) : '';
 }
 
+/**
+ * The same treatment for the status, and for the same reason.
+ *
+ * The API validates it too — `RewardHistoryDto` answers an unknown status with
+ * a 422 naming the allowed ones — and that is the control. This is about what
+ * a *user* sees: a mistyped or stale URL should show them their statement, not
+ * an error panel about a parameter they did not type.
+ */
+function readStatus(raw: string | null): RewardStatus | '' {
+  if (!raw) return '';
+
+  return LEDGER_STATUSES.includes(raw as RewardStatus) ? (raw as RewardStatus) : '';
+}
+
 /** An unparseable offset is page one, not `NaN` rows into the ledger. */
 function readOffset(raw: string | null): number {
   return Math.max(0, Math.floor(Number(raw) || 0));
 }
 
-export const __testing = { readType, readOffset };
+export const __testing = { readType, readStatus, readOffset, pageQuery };

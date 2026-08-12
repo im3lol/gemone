@@ -7,6 +7,7 @@ import {
   REWARD_SOURCE_TYPES,
   REWARD_TRANSACTION_TYPES,
   SYNC_MODES,
+  rewardStatusOf,
 } from '@gemone/contracts';
 import type { Job, Queue } from 'bullmq';
 import cookieParser from 'cookie-parser';
@@ -473,6 +474,139 @@ describe('earning points end to end (integration)', () => {
       expect(entry.pendingDelta).toBe(171);
       expect(entry.maturesAt).not.toBeNull();
       expect(entry.holdPeriodDays).toBe(14);
+    });
+
+    /**
+     * Filtering the statement by derived status — TODO T80.
+     *
+     * The reason this is an integration test and not a unit one is the count.
+     * The objection T80 recorded was that a status filter applied *after* the
+     * fetch shows four rows under "1–20 of 28" — so what needs proving is that
+     * `total` is the filtered total, which only a real query answers.
+     */
+    describe('the status filter', () => {
+      /** One user with a credit, its maturation, and a chargeback. */
+      async function ledger() {
+        const { user, clicked } = await earn();
+
+        await prisma.rewardTransaction.updateMany({
+          where: { userId: user.id, type: REWARD_TRANSACTION_TYPES.CONVERSION_CREDIT },
+          data: { maturesAt: new Date(Date.now() - 1000) },
+        });
+        await maturation.sweep();
+
+        await request(server())
+          .post('/postback/mock')
+          .query(postbackQuery(clicked.subId, { reversed: '1' }))
+          .expect(200);
+        await drainPostbacks();
+
+        return user;
+      }
+
+      const history = (user: { token: string }, query = '') =>
+        request(server())
+          .get(`/rewards/history${query}`)
+          .set('Authorization', `Bearer ${user.token}`)
+          .expect(200);
+
+      it('returns everything when nothing is filtered', async () => {
+        const user = await ledger();
+        const response = await history(user);
+
+        expect(response.body.total).toBe(3);
+        expect(response.body.items.map((row: { type: string }) => row.type).sort()).toEqual([
+          'CHARGEBACK_DEBIT',
+          'CONVERSION_CREDIT',
+          'REWARD_MATURATION',
+        ]);
+      });
+
+      it.each(['PENDING', 'CLEARED', 'REVERSED'])(
+        'narrows to the rows derived as %s',
+        async (status) => {
+          const user = await ledger();
+          const response = await history(user, `?status=${status}`);
+
+          expect(response.body.total).toBe(1);
+          expect(
+            rewardStatusOf(response.body.items[0] as { type: never; pendingDelta: number }),
+          ).toBe(status);
+        },
+      );
+
+      it('counts the filtered rows, not the unfiltered ones', async () => {
+        const user = await ledger();
+
+        const all = await history(user);
+        const reversed = await history(user, '?status=REVERSED');
+
+        // The whole point. A filter that leaves `total` at 3 puts "1–20 of 3"
+        // above a single row, and the pager offers a second page that is empty.
+        expect(all.body.total).toBe(3);
+        expect(reversed.body.total).toBe(1);
+        expect(reversed.body.items).toHaveLength(1);
+      });
+
+      it('pages within the filtered set', async () => {
+        const user = await ledger();
+
+        const first = await history(user, '?limit=1');
+        const second = await history(user, '?limit=1&offset=1');
+        const past = await history(user, '?status=REVERSED&offset=1');
+
+        expect(first.body.total).toBe(3);
+        expect(first.body.items[0].id).not.toBe(second.body.items[0].id);
+
+        // Offset one into a set of one is the end of it, and the total still
+        // describes the filtered set so the pager knows there is no page two.
+        expect(past.body.total).toBe(1);
+        expect(past.body.items).toHaveLength(0);
+      });
+
+      it('answers an empty filtered set with zero rows and a zero count', async () => {
+        const user = await ledger();
+        const response = await history(user, '?status=PAID');
+
+        // This user has never withdrawn. "No results for this filter" is a
+        // different sentence from "you have no earnings", and the count is
+        // what lets the page tell them apart.
+        expect(response.body).toMatchObject({ total: 0, items: [] });
+      });
+
+      it('intersects with the type filter rather than overriding it', async () => {
+        const user = await ledger();
+
+        const both = await history(user, '?type=CHARGEBACK_DEBIT&status=REVERSED');
+        const impossible = await history(user, '?type=CHARGEBACK_DEBIT&status=PAID');
+
+        expect(both.body.total).toBe(1);
+        // A chargeback is never a settled withdrawal. Empty is the honest
+        // answer, and the database gives it without a special case.
+        expect(impossible.body.total).toBe(0);
+      });
+
+      it('refuses an unknown status instead of ignoring it', async () => {
+        const user = await ledger();
+
+        // Silently returning everything would be a filter that lied about what
+        // it did. The web client keeps a bad value out of the URL; this is the
+        // control behind it. 422 is this API's validation answer throughout.
+        await request(server())
+          .get('/rewards/history?status=NOT_A_STATUS')
+          .set('Authorization', `Bearer ${user.token}`)
+          .expect(422);
+      });
+
+      it('still scopes to the caller', async () => {
+        const user = await ledger();
+        const other = await createUser();
+
+        const response = await history(other, '?status=REVERSED');
+
+        expect(response.body.total).toBe(0);
+        expect((await rewards.getHistory(user.id, { status: 'REVERSED' })).total).toBe(1);
+      });
     });
 
     it('has no endpoint that lets anyone move their own points', async () => {

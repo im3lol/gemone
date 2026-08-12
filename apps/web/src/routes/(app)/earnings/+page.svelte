@@ -5,7 +5,7 @@
   Earnings                                    + Withdraw
   Available · Pending · Total earned          (tinted wallet cards)
   ┌───────────────────────────────────────────────────────┐
-  │ Statement                          Show: [ filter ]   │
+  │ Statement                  Show: [ type ] [ status ]  │
   │ table · pager                                         │
   └───────────────────────────────────────────────────────┘
   ```
@@ -47,6 +47,7 @@
     offset={data.offset}
     pageSize={data.pageSize}
     type={data.type}
+    status={data.status}
     query={data.query}
   />
 </div>

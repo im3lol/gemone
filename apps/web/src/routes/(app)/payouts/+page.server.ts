@@ -1,4 +1,5 @@
 import { fail, redirect } from '@sveltejs/kit';
+import { ERROR_CODES } from '@gemone/contracts';
 import type { Paginated, PayoutSummary } from '@gemone/contracts';
 
 import type { PayoutHistoryResult, WithdrawFieldErrors } from '$lib/components/payouts';
@@ -138,13 +139,14 @@ type FormField = (typeof FORM_FIELDS)[number];
  * the daily cap and an insufficient balance are about the request as a whole,
  * and pinning them to a field would say the field is malformed when it is not.
  *
- * Written as string literals rather than imported from `ERROR_CODES`, for the
- * reason `$lib/rewards/ledger.ts` records — TODO T79.
+ * Keyed off `ERROR_CODES` rather than off three string literals: these are
+ * the API's own identifiers, and a typo in one is a field message that simply
+ * never appears — the quietest way for this mapping to rot.
  */
 const FIELD_FOR_CODE: Record<string, FormField> = {
-  PAYOUT_AMOUNT_OUT_OF_RANGE: 'amountPoints',
-  PAYOUT_METHOD_UNSUPPORTED: 'method',
-  PAYOUT_DESTINATION_INVALID: 'destination',
+  [ERROR_CODES.PAYOUT_AMOUNT_OUT_OF_RANGE]: 'amountPoints',
+  [ERROR_CODES.PAYOUT_METHOD_UNSUPPORTED]: 'method',
+  [ERROR_CODES.PAYOUT_DESTINATION_INVALID]: 'destination',
 };
 
 /**

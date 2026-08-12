@@ -32,15 +32,16 @@ one phase at a time.
 | `apps/web/src/lib/components/auth/` | The centred authentication card |
 | `apps/web/src/lib/components/landing/` | The public marketing page, one component per band |
 | `apps/web/src/lib/components/dashboard/` | The dashboard's four panels |
-| `apps/web/src/lib/components/earnings/` | The statement — filter, table, pager |
+| `apps/web/src/lib/components/earnings/` | The statement — two filters, table, pager |
 | `apps/web/src/lib/components/payouts/` | The withdrawal screen — balance, form, history |
 | `apps/web/src/lib/components/offers/` | The offer wall — filter bar, grid, card, tile |
-| `apps/web/src/lib/components/admin/` | The payout queue — tabs, table, review context, decision |
+| `apps/web/src/lib/components/admin/` | The payout queue, the provider cards, the fraud review queue |
 | `apps/web/src/lib/rewards/ledger.ts` | What a ledger movement *means*, in one tested module |
 | `apps/web/src/lib/payouts/payout.ts` | What a withdrawal state means, and points as money |
 | `apps/web/src/lib/offers/offer.ts` | What an offer category means, and the tile's colour |
 | `apps/web/src/lib/admin/payout-queue.ts` | The queue's vocabulary, and which transitions a state offers |
 | `apps/web/src/lib/admin/providers.ts` | Provider health, sync outcomes, capabilities, intervals |
+| `apps/web/src/lib/admin/fraud.ts` | What a fired rule looked at, and what each decision does to the points |
 | `apps/web/src/routes/dev/ui/` | Visual showcase — development only, 404s in a production build |
 | `apps/web/vite.config.ts` | The Tailwind plugin |
 
@@ -842,6 +843,68 @@ screen.
 
 The grid is a `<ul>` — it is a list of things, and "list, 12 items" is the one
 piece of structure a wall of cards otherwise loses entirely.
+
+---
+
+## 9.7 The fraud review queue
+
+PROJECT.md §4.7. The screen that empties a queue the engine has been able to
+fill since the fraud module shipped.
+
+### Cards, not a table
+
+Every other admin queue in this kit is a `<table>`, because its columns are
+compared down the page. This one is not. A fraud decision needs its evidence
+*beside* it — the score, the rules that fired, the reason recorded at hold
+time, how long the account has waited, how many points are withheld — and a
+table would put all of that behind a link. A queue whose every entry costs a
+page load is a queue that does not get emptied.
+
+The cards are still a `<ul>`, for §9.6's reason.
+
+### The score is a number, and stays one
+
+There is no High / Medium / Low badge, and its absence is deliberate enough to
+be documented (D92): the threshold that makes a score meaningful is configured
+per rule and snapshotted onto the evaluation, so a band drawn in a component
+would be a fraud rule invented by a stylesheet's neighbour. A **missing** score
+gets its own badge — "Not scored" rather than a zero, because a conversion held
+before scoring ran is not a conversion that scored clean.
+
+### The reason field is the control, not a modal
+
+Both decisions require a reason (`ReviewHeldConversionDto` makes it mandatory,
+unlike a payout approval's), so each decision is one row: a labelled `Input`
+and the button that submits it. No confirmation dialog — the reason field
+already forces a pause, and it produces something an audit can read afterwards,
+which a dialog does not.
+
+### Where a message goes says what happened
+
+A success has no card left to sit on: the hold is resolved and gone from the
+queue on the reload that follows, so the confirmation is a page-level `Alert`.
+A refusal *does* have one — the conversion is still held — and appears inside
+that card, beside the buttons that were pressed. With ten cards on screen, a
+message with no subject would be read against whichever card the eye was on.
+
+---
+
+## 9.8 The statement's second filter
+
+Two selects, `type` and `status`, in one `<form method="GET">`. They are
+different questions about the same row: type is what a movement *was*, status is
+where its points are *now*.
+
+Both are applied by the API (D91), which is the whole reason the second one
+exists — the count under the table is the count of what matched, not the count
+of what was fetched before something was hidden. Neither select carries the
+offset, so changing a filter lands on page one; page 3 of the old result set is
+usually past the end of the new one, and an empty page reads as "there is
+nothing here".
+
+The page rebuilds the pager's query string from the filters it *applied*, not
+from `url.search`. A value the server rejected — `?status=nonsense` — is
+dropped once, rather than carried onto every pager link to be dropped again.
 
 ---
 

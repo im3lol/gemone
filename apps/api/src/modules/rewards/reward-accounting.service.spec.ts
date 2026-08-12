@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import {
+  REWARD_STATUSES,
+  REWARD_TRANSACTION_TYPES,
+  rewardStatusOf,
+  type RewardTransactionType,
+} from '@gemone/contracts';
 
 import { ValidationError } from '../../core/errors/app-error';
 import { __testing } from './reward-accounting.service';
 
-const { requirePositive, clampLimit, toBalance } = __testing;
+const { requirePositive, clampLimit, toBalance, whereForStatus } = __testing;
 
 describe('requirePositive', () => {
   it('accepts a positive integer', () => {
@@ -81,5 +87,80 @@ describe('clampLimit', () => {
     expect(clampLimit(0)).toBe(1);
     expect(clampLimit(10_000)).toBe(100);
     expect(clampLimit(40)).toBe(40);
+  });
+});
+
+/**
+ * The status filter — TODO T80.
+ *
+ * The objection T80 raised was that filtering on a derived value duplicates the
+ * derivation: once as the rule the UI renders, once as a `where` clause, in two
+ * languages that can drift apart. These tests are the answer. They do not check
+ * that the clause is *a* clause; they check that it selects exactly the rows
+ * `rewardStatusOf` would give that status to, over every combination the
+ * contract admits.
+ *
+ * A drift would have to survive that, and it cannot: both sides read
+ * `REWARD_STATUS_RULES` and neither of them contains the list.
+ */
+describe('whereForStatus', () => {
+  /** Applies the emitted clause the way Prisma would, so it can be compared. */
+  function matches(clause: ReturnType<typeof whereForStatus>, row: Movement): boolean {
+    if (!clause.type.in.includes(row.type)) return false;
+    if (clause.pendingDelta?.gt !== undefined && !(row.pendingDelta > clause.pendingDelta.gt)) {
+      return false;
+    }
+    if (clause.pendingDelta?.lte !== undefined && !(row.pendingDelta <= clause.pendingDelta.lte)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  interface Movement {
+    type: RewardTransactionType;
+    pendingDelta: number;
+  }
+
+  /* Every type against a pending credit, a settled one and a debit. */
+  const ROWS: Movement[] = Object.values(REWARD_TRANSACTION_TYPES).flatMap((type) =>
+    [1200, 0, -1200].map((pendingDelta) => ({ type, pendingDelta })),
+  );
+
+  it.each(Object.values(REWARD_STATUSES))(
+    'selects exactly the rows %s would be derived for',
+    (status) => {
+      const clause = whereForStatus(status);
+
+      for (const row of ROWS) {
+        expect(matches(clause, row)).toBe(rewardStatusOf(row) === status);
+      }
+    },
+  );
+
+  it('gives every row exactly one status, so the filters partition the ledger', () => {
+    for (const row of ROWS) {
+      const hits = Object.values(REWARD_STATUSES).filter((status) =>
+        matches(whereForStatus(status), row),
+      );
+
+      expect(hits).toHaveLength(1);
+      expect(hits[0]).toBe(rewardStatusOf(row));
+    }
+  });
+
+  it('splits credits on the bucket they landed in, which is the point of the axis', () => {
+    // One transaction type, two answers: a credit inside its hold period and a
+    // credit that cleared it are the same event and different money.
+    expect(rewardStatusOf({ type: 'CONVERSION_CREDIT', pendingDelta: 1200 })).toBe('PENDING');
+    expect(rewardStatusOf({ type: 'CONVERSION_CREDIT', pendingDelta: 0 })).toBe('AVAILABLE');
+  });
+
+  it('has no opinion about a type this build has never heard of', () => {
+    // A newer server, a replayed record. `null` is what makes the caller say
+    // something about not knowing, instead of printing a confident wrong word.
+    expect(rewardStatusOf({ type: 'SOMETHING_NEW' as RewardTransactionType, pendingDelta: 0 })).toBe(
+      null,
+    );
   });
 });

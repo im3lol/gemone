@@ -899,5 +899,29 @@ nothing the slug did. **T83** is closed by loading the rate once on the `(app)`
 layout: `/dashboard` and `/earnings` gained the cash caption they lacked, and
 `/offers` and `/payouts` **dropped** the calls they were each making (D89).
 
+Phase 10 closes the packaging debt, the statement's missing axis, and the last
+open operational loop.
+
+**T79** is closed by giving `@gemone/contracts` both module formats (D90). The
+workaround it had accumulated across six phases — enum members spelled out as
+string literals in five `$lib` modules — is undone rather than documented
+further, and three `Object.keys(…) as X[]` casts became `Object.values(THE_ENUM)`
+with no cast at all.
+
+**T80** is closed by moving the status derivation into the contract as *data*,
+so the API builds its `where` clause from the same rules the browser renders
+(D91). `/earnings` gained a second select. What matters is underneath it: the
+API filters and counts with one `where`, so the pager's total is the filtered
+total — the "1–20 of 28 above a list of four" that T80 refused to ship.
+
+`/admin/fraud` is the last screen in the loop the product already had end to
+end everywhere else. A conversion is scored, held, and now decided: the queue
+is oldest-first because a held conversion is somebody who earned points and
+cannot spend them, each entry carries the score and the rules that produced it,
+and there are exactly two buttons because the API accepts exactly two
+decisions. There are deliberately **no risk bands** — the threshold that makes
+a score meaningful is per-rule configuration, and a High/Medium/Low badge drawn
+in a component would be a fraud rule written in a presentation module (D92).
+
 Departures from what this audit and DESIGN_SYSTEM.md record are deliberate and
-are logged as [DECISIONS.md](DECISIONS.md) D79–D89.
+are logged as [DECISIONS.md](DECISIONS.md) D79–D92.

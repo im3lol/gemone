@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "outDir": "./dist/esm",
+
+    /*
+     * The CommonJS pass already emitted the declarations, and both builds
+     * describe the same types. Emitting a second copy would only give the
+     * `types` condition two files to disagree about.
+     */
+    "declaration": false,
+    "declarationMap": false
+  }
+}

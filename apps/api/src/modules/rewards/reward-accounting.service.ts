@@ -3,6 +3,7 @@ import {
   ERROR_CODES,
   REWARD_ACTOR_TYPES,
   REWARD_SOURCE_TYPES,
+  REWARD_STATUS_RULES,
   REWARD_TRANSACTION_TYPES,
   type AdminRewardHistoryQuery,
   type Balance,
@@ -10,6 +11,7 @@ import {
   type Paginated,
   type RewardActorType,
   type RewardSourceType,
+  type RewardStatus,
   type RewardTransactionRecord,
   type RewardTransactionType,
 } from '@gemone/contracts';
@@ -508,7 +510,12 @@ export class RewardAccountingService {
 
   async getHistory(
     userId: string,
-    query: { type?: RewardTransactionType; limit?: number; offset?: number } = {},
+    query: {
+      type?: RewardTransactionType;
+      status?: RewardStatus;
+      limit?: number;
+      offset?: number;
+    } = {},
   ): Promise<Paginated<RewardTransactionRecord>> {
     return this.findMany({ ...query, userId });
   }
@@ -523,6 +530,9 @@ export class RewardAccountingService {
       ...(query.userId ? { userId: query.userId } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.sourceId ? { sourceId: query.sourceId } : {}),
+      // Nested under `AND` so it can constrain `type` without colliding with
+      // the `type` filter above: both may be set, and they intersect.
+      ...(query.status ? { AND: [whereForStatus(query.status)] } : {}),
     };
 
     const [items, total] = await Promise.all([
@@ -995,4 +1005,38 @@ function clampLimit(requested: number | undefined): number {
   return Math.min(Math.max(1, requested), MAX_LIMIT);
 }
 
-export const __testing = { requirePositive, clampLimit, toBalance, DEFAULT_LIMIT, MAX_LIMIT };
+/**
+ * A derived status, translated into a `where` clause — TODO T80.
+ *
+ * The rule is data in the contract (`REWARD_STATUS_RULES`); this is the only
+ * place that turns it into SQL, and it is mechanical on purpose. That is the
+ * whole answer to the objection T80 raised — that filtering on a derived value
+ * means writing the derivation twice, in two languages, where the copies can
+ * drift. There is one derivation. `rewardStatusOf` reads the rule to *decide*
+ * a row's status and this reads the same rule to *select* rows; they cannot
+ * disagree about which types belong to a status, because neither of them
+ * contains that list.
+ *
+ * Filtering here rather than after fetching is also what makes the count
+ * honest: `findMany` and `count` take the same `where`, so the pager's total
+ * is the number of rows that match, not the number that existed before the
+ * page was filtered in memory.
+ */
+function whereForStatus(status: RewardStatus) {
+  const rule = REWARD_STATUS_RULES[status];
+
+  return {
+    type: { in: [...rule.types] },
+    ...(rule.pendingDelta === 'positive' ? { pendingDelta: { gt: 0 } } : {}),
+    ...(rule.pendingDelta === 'nonPositive' ? { pendingDelta: { lte: 0 } } : {}),
+  };
+}
+
+export const __testing = {
+  requirePositive,
+  clampLimit,
+  toBalance,
+  whereForStatus,
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+};

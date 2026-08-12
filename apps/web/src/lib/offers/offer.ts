@@ -1,3 +1,4 @@
+import { OFFER_CATEGORIES, WALL_OFFER_SORTS } from '@gemone/contracts';
 import type { OfferCategory, WallOfferSort } from '@gemone/contracts';
 
 /**
@@ -15,14 +16,11 @@ import type { OfferCategory, WallOfferSort } from '@gemone/contracts';
  * category (DESIGN_SYSTEM.md §17.1) and nothing in our catalog knows how hard
  * an offer is, so that badge is absent rather than guessed at.
  *
- * ## Why the category and sort names are written out rather than imported
- *
- * `@gemone/contracts` exports `OFFER_CATEGORIES` and `WALL_OFFER_SORTS` as
- * runtime objects, and importing either breaks `vite build` — the package
- * compiles to CommonJS and re-exports through `__exportStar`, which Rollup
- * cannot trace named values through (TODO T79). `Record<OfferCategory, …>` is
- * what keeps these maps honest anyway: a category added to the contract is a
- * compile error here, and a misspelt one is too.
+ * The map keys below are written out as literals rather than computed from
+ * `OFFER_CATEGORIES`. That is `Record<OfferCategory, …>` doing its job: a
+ * category added to the contract is a compile error here, which forces someone
+ * to choose an English word for it, a glyph and a tone. A map built by walking
+ * the enum would quietly grow a filter button reading `APP_INSTALL`.
  */
 
 /** A `Badge` variant. Restated rather than imported, so this module depends on nothing. */
@@ -89,7 +87,7 @@ const TONES: Record<OfferCategory, OfferTone> = {
  * construction: `Record<OfferCategory, …>` refuses a missing key and an object
  * literal refuses an extra one, so this array *is* the contract's set.
  */
-export const OFFER_CATEGORIES_IN_ORDER = Object.keys(LABELS) as OfferCategory[];
+export const OFFER_CATEGORIES_IN_ORDER: OfferCategory[] = Object.values(OFFER_CATEGORIES);
 
 /**
  * The fallbacks exist because the category is a wire value.
@@ -117,7 +115,7 @@ const SORTS: Record<WallOfferSort, string> = {
   newest: 'Newest first',
 };
 
-export const OFFER_SORTS_IN_ORDER = Object.keys(SORTS) as WallOfferSort[];
+export const OFFER_SORTS_IN_ORDER: WallOfferSort[] = Object.values(WALL_OFFER_SORTS);
 
 export function sortLabel(sort: WallOfferSort): string {
   return SORTS[sort] ?? 'Highest reward';

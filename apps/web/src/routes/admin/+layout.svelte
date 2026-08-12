@@ -23,12 +23,13 @@
   let { children } = $props();
 
   /**
-   * The admin screens that exist. Two, and the list grows with them — a
+   * The admin screens that exist. Three, and the list grows with them — a
    * five-group sidebar whose links lead to pages that do not exist is worse
    * than none (UI_AUDIT.md AD1).
    */
   const SECTIONS = [
     { href: '/admin/payouts', label: 'Payouts' },
+    { href: '/admin/fraud', label: 'Fraud' },
     { href: '/admin/providers', label: 'Providers' },
   ];
 </script>
