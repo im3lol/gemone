@@ -687,6 +687,12 @@ Admins move money, so the admin surface is treated as a distinct trust zone
 
 - **No self-registration.** Admin accounts are provisioned by a seed script or by
   an existing admin.
+- **The platform is never left without an administrator who can sign in.** Both
+  columns that could remove one — `role` and `status` — take the same row lock
+  over the active-administrator rows and count what the write leaves, inside the
+  transaction that performs it. A change reaching zero is refused and rolled
+  back, including when two admins act concurrently (D100, D101). An admin also
+  cannot change their own role or standing.
 - Admin routes sit under a separate path prefix with their own guard, their own
   rate limits, and their own throttling thresholds.
 - **Every admin action writes an audit entry** before the response is returned.

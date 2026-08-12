@@ -747,6 +747,292 @@ describe('admin foundation (integration)', () => {
         .set('Authorization', `Bearer ${user.token}`)
         .expect(200);
     });
+
+    /**
+     * The last-administrator interlock on the status column — TODO T89.
+     *
+     * T85 gave the role column this guarantee and left the status column able
+     * to reach the same place by a different route: an administrator who is
+     * suspended fails `UsersService.isActive`, and `JwtAuthGuard` refuses them
+     * before their role is ever read. A platform whose administrators are all
+     * suspended cannot reinstate one, because reinstating is an administrative
+     * endpoint — and `create-admin.js` cannot either, because it writes `role`
+     * and not `status`.
+     *
+     * What is worth testing is not that a status changes. It is that the
+     * platform cannot be left with nobody able to administer it, *including*
+     * by two administrators acting in the same moment, and that everything
+     * legitimate about suspending an administrator still works.
+     */
+    describe('the last active administrator', () => {
+      const REASON = 'reorganising the operations team';
+
+      const activeAdmins = () =>
+        prisma.user.count({ where: { role: 'ADMIN', status: 'ACTIVE' } });
+
+      it('still lets one administrator suspend another', async () => {
+        const admin = await createUser('ADMIN');
+        const other = await createUser('ADMIN');
+
+        // The interlock protects the *last* one. Nothing about suspending an
+        // administrator is forbidden while another remains.
+        await request(server())
+          .patch(`/admin/users/${other.id}/status`)
+          .set('Authorization', `Bearer ${admin.token}`)
+          .send({ status: 'SUSPENDED', reason: REASON })
+          .expect(200);
+
+        expect(await activeAdmins()).toBe(1);
+      });
+
+      it('lets a suspended administrator be reinstated', async () => {
+        const admin = await createUser('ADMIN');
+        const other = await createUser('ADMIN');
+        const auth = { Authorization: `Bearer ${admin.token}` };
+
+        await request(server())
+          .patch(`/admin/users/${other.id}/status`)
+          .set(auth)
+          .send({ status: 'SUSPENDED', reason: REASON })
+          .expect(200);
+
+        // A reinstatement can only raise the count, and the interlock counts
+        // what the write leaves rather than who is being written.
+        await request(server())
+          .patch(`/admin/users/${other.id}/status`)
+          .set(auth)
+          .send({ status: 'ACTIVE', reason: 'cleared, back on the team' })
+          .expect(200);
+
+        expect(await activeAdmins()).toBe(2);
+      });
+
+      it('still refuses an administrator changing their own standing', async () => {
+        const admin = await createUser('ADMIN');
+
+        const response = await request(server())
+          .patch(`/admin/users/${admin.id}/status`)
+          .set('Authorization', `Bearer ${admin.token}`)
+          .send({ status: 'SUSPENDED', reason: 'stepping back from operations' })
+          .expect(403);
+
+        /*
+         * Unchanged by T89, and it is the reason a *single* request can never
+         * reach zero: the caller is an active administrator and is not the row
+         * being written, so at least their own row survives every one-request
+         * change. The interlock exists for the case this rule cannot see.
+         */
+        expect(response.body.error.code).toBe(ERROR_CODES.ADMIN_SELF_ACTION_FORBIDDEN);
+        expect(await activeAdmins()).toBe(1);
+      });
+
+      it('does not stand in the way of suspending an ordinary user', async () => {
+        const admin = await createUser('ADMIN');
+        const user = await createUser('USER');
+
+        // The count is unaffected by a non-administrator, so the assertion
+        // never fires — but the lock is still taken, deliberately.
+        await request(server())
+          .patch(`/admin/users/${user.id}/status`)
+          .set('Authorization', `Bearer ${admin.token}`)
+          .send({ status: 'BANNED', reason: 'confirmed fraudulent activity' })
+          .expect(200);
+
+        expect(await activeAdmins()).toBe(1);
+      });
+
+      /**
+       * The case the self-action rule cannot see — and the one T89 filed.
+       *
+       * Two administrators suspending each other are two legal requests:
+       * neither is a self-action, and each one, checked on its own, leaves an
+       * administrator behind. Before the interlock both committed and the
+       * platform was left with none.
+       */
+      it('never lets two administrators suspend each other into an empty platform', async () => {
+        const first = await createUser('ADMIN');
+        const second = await createUser('ADMIN');
+
+        const results = await Promise.all([
+          request(server())
+            .patch(`/admin/users/${second.id}/status`)
+            .set('Authorization', `Bearer ${first.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+          request(server())
+            .patch(`/admin/users/${first.id}/status`)
+            .set('Authorization', `Bearer ${second.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+        ]);
+
+        expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+
+        const refused = results.find((r) => r.status === 409);
+        expect(refused?.body.error.code).toBe(ERROR_CODES.ADMIN_LAST_ADMIN_PROTECTED);
+
+        // One administrator left, still able to act.
+        expect(await activeAdmins()).toBe(1);
+      });
+
+      it('rolls the whole transaction back when it refuses', async () => {
+        const first = await createUser('ADMIN');
+        const second = await createUser('ADMIN');
+
+        const results = await Promise.all([
+          request(server())
+            .patch(`/admin/users/${second.id}/status`)
+            .set('Authorization', `Bearer ${first.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+          request(server())
+            .patch(`/admin/users/${first.id}/status`)
+            .set('Authorization', `Bearer ${second.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+        ]);
+
+        const survivor = (await prisma.user.findMany({
+          where: { role: 'ADMIN', status: 'ACTIVE' },
+        }))[0];
+
+        /*
+         * The refusal is a rollback, not a compensating write: the status, the
+         * session revocation and the audit entry all belong to one transaction
+         * (DATABASE.md §10.1), so exactly one suspension is recorded and the
+         * survivor still holds the sessions they had.
+         */
+        expect(await prisma.adminAuditLog.count()).toBe(1);
+        expect(
+          await prisma.refreshToken.count({
+            where: { userId: survivor!.id, revokedAt: null },
+          }),
+        ).toBeGreaterThan(0);
+
+        // And the survivor can still act, with the session they already had.
+        const token = results.length && survivor!.id === first.id ? first.token : second.token;
+        await request(server())
+          .get('/admin/users')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+      });
+
+      it('does not count an administrator who cannot sign in', async () => {
+        const first = await createUser('ADMIN');
+        const second = await createUser('ADMIN');
+        const suspended = await createUser('ADMIN');
+
+        await request(server())
+          .patch(`/admin/users/${suspended.id}/status`)
+          .set('Authorization', `Bearer ${first.token}`)
+          .send({ status: 'SUSPENDED', reason: 'on leave' })
+          .expect(200);
+
+        /*
+         * With a suspended administrator present, counting rows by role alone
+         * would report a survivor and let both suspensions through — leaving
+         * the platform with an administrator who cannot sign in, which is none.
+         */
+        const results = await Promise.all([
+          request(server())
+            .patch(`/admin/users/${second.id}/status`)
+            .set('Authorization', `Bearer ${first.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+          request(server())
+            .patch(`/admin/users/${first.id}/status`)
+            .set('Authorization', `Bearer ${second.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+        ]);
+
+        expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+        expect(await activeAdmins()).toBe(1);
+        expect(await prisma.user.count({ where: { role: 'ADMIN' } })).toBe(3);
+      });
+
+      /**
+       * The two columns are one invariant, so they take one lock.
+       *
+       * A demotion and a suspension reach the same empty platform together.
+       * Two lock sets — one per endpoint — would not see each other, and this
+       * pair would slip through both.
+       */
+      it('holds when one administrator is demoted while the other is suspended', async () => {
+        const first = await createUser('ADMIN');
+        const second = await createUser('ADMIN');
+
+        const results = await Promise.all([
+          request(server())
+            .patch(`/admin/users/${second.id}/role`)
+            .set('Authorization', `Bearer ${first.token}`)
+            .send({ role: 'USER', reason: REASON }),
+          request(server())
+            .patch(`/admin/users/${first.id}/status`)
+            .set('Authorization', `Bearer ${second.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+        ]);
+
+        expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+        expect(await activeAdmins()).toBe(1);
+      });
+
+      it('serializes two suspensions of the same administrator', async () => {
+        const admin = await createUser('ADMIN');
+        const other = await createUser('ADMIN');
+        const third = await createUser('ADMIN');
+
+        // The same target, twice at once. One wins; the loser sees the state
+        // the winner left and is refused as a no-op rather than double-writing.
+        const results = await Promise.all([
+          request(server())
+            .patch(`/admin/users/${third.id}/status`)
+            .set('Authorization', `Bearer ${admin.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+          request(server())
+            .patch(`/admin/users/${third.id}/status`)
+            .set('Authorization', `Bearer ${other.token}`)
+            .send({ status: 'SUSPENDED', reason: REASON }),
+        ]);
+
+        expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+        expect(
+          results.find((r) => r.status === 409)?.body.error.code,
+        ).toBe(ERROR_CODES.USER_INVALID_STATUS_TRANSITION);
+        expect(await prisma.adminAuditLog.count()).toBe(1);
+      });
+
+      it('keeps refusing an unknown account and a malformed id', async () => {
+        const admin = await createUser('ADMIN');
+        const auth = { Authorization: `Bearer ${admin.token}` };
+
+        // The interlock runs inside the write; it must not have moved these
+        // earlier failures or changed what they answer.
+        await request(server())
+          .patch('/admin/users/0192f0a0-0000-7000-8000-00000000dead/status')
+          .set(auth)
+          .send({ status: 'SUSPENDED', reason: REASON })
+          .expect(404);
+
+        await request(server())
+          .patch('/admin/users/not-a-uuid/status')
+          .set(auth)
+          .send({ status: 'SUSPENDED', reason: REASON })
+          .expect(422);
+      });
+
+      it('is not reachable by a non-admin or an unauthenticated caller', async () => {
+        const admin = await createUser('ADMIN');
+        const user = await createUser('USER');
+
+        await request(server())
+          .patch(`/admin/users/${admin.id}/status`)
+          .set('Authorization', `Bearer ${user.token}`)
+          .send({ status: 'SUSPENDED', reason: REASON })
+          .expect(403);
+
+        await request(server())
+          .patch(`/admin/users/${admin.id}/status`)
+          .send({ status: 'SUSPENDED', reason: REASON })
+          .expect(401);
+
+        expect(await activeAdmins()).toBe(1);
+      });
+    });
   });
 
   /**

@@ -2271,7 +2271,7 @@ thinking time — the precondition is what covers that.
 ---
 
 ### T89 — A status change has no last-administrator interlock
-**Status:** open · **Raised:** UI phase 14 (T85) · **Priority:** medium
+**Status:** RESOLVED in UI phase 15 · **Raised:** UI phase 14 (T85) · **Priority:** medium
 
 T85 gave `PATCH /admin/users/:id/role` an interlock: the change is refused, under
 a row lock, if it would leave no administrator able to sign in (D100).
@@ -2304,6 +2304,28 @@ before writing it.
 
 **Trigger:** a second full-time operator — the same trigger T85 had, and the
 reason this is worth more than its "low" sibling.
+
+**Resolved in phase 15, and reproduced against the running stack first.** See
+D101. Two administrators suspending each other with `Promise.all` both returned
+`200`, leaving `0` active administrators and two `ADMIN` rows; every one of them
+was then refused at the guard with `AUTH_ACCOUNT_INACTIVE`, on the API *and* at
+login. Running `create-admin.js` against a suspended administrator reported
+"Promoted existing account" and changed nothing that mattered — the row was
+already `ADMIN`, and it is `status` that locks the account out. Recovery was
+`UPDATE users SET status='ACTIVE'` by hand, exactly as this entry predicted.
+
+**The judgement this entry asked for was settled as: refuse outright.** A warning
+is not a control — the only correct answer for an operation whose failure mode
+needs shell access to undo is to refuse it, the same answer the role column
+already gives.
+
+The lock and the assertion are now **one pair shared by both columns**
+(`lockActiveAdmins`, `assertAnAdminRemains`), because a demotion and a suspension
+reach the same empty platform *together* and two separate lock sets would not
+see each other. An integration test fires exactly that pair concurrently.
+
+Eleven integration tests cover it; four of them fail with the interlock removed,
+which was checked rather than assumed.
 
 ---
 

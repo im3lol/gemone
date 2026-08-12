@@ -90,9 +90,6 @@ Tracked as numbered entries in [docs/TODO.md](docs/TODO.md), each with the
 concrete event that would make it worth doing. The ones worth knowing before you
 read code:
 
-- **T89** — the status endpoint has no last-administrator interlock (the role
-  endpoint does). Two admins suspending each other concurrently can lock the
-  platform out; recovery is direct SQL.
 - **T6** — integration tests reset tables instead of rolling back a transaction,
   so the suite runs one file at a time.
 - **T12** — the wall does not deduplicate or rank across providers yet. With one
@@ -450,9 +447,16 @@ own throttles, and **every action writes an audit entry** that is never deleted.
 
 Administrators are provisioned by the seed script **or by an existing
 administrator** (`PATCH /admin/users/:id/role`). There is no admin
-self-registration. An administrator cannot change their own role or standing, and
-a role change that would leave the platform with no administrator able to sign in
-is refused under a row lock.
+self-registration, and an administrator cannot change their own role or standing.
+
+**The platform cannot be left without an administrator who can sign in.** Both
+columns that could remove one — the role and the status — take the same row lock
+over the active-administrator rows and count what the write leaves, inside the
+same transaction. A change that would reach zero is refused with `409
+ADMIN_LAST_ADMIN_PROTECTED` and rolled back, including when two administrators
+act in the same moment. It is an invariant about the state, not a rule attached
+to either endpoint: suspending, banning and reinstating another administrator all
+still work (D100, D101).
 
 ---
 
@@ -821,7 +825,9 @@ The full list, each with its trigger, is [docs/TODO.md](docs/TODO.md).
   TOTP secret, or a registration IP.
 - **Reading a payment destination is an audited action**, not a lookup.
 - **Admin accounts cannot self-register**, cannot act on their own standing or
-  role, and cannot all be removed.
+  role, and cannot all be removed — neither by demotion nor by suspension, and
+  not by two administrators acting concurrently. The last one able to sign in is
+  protected under a row lock.
 - **The auth guard re-reads the user on every request.** Authorization decisions
   are never cached, so suspension and demotion are immediate.
 

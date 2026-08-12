@@ -992,5 +992,12 @@ points are untouched. On the administrator's own account the card explains
 instead of offering a control, the pattern the standing card already used —
 and the API remains the control (D100).
 
+Phase 15 closes **T89** and changes nothing on the screen, which is the result
+worth recording. The status card already renders the API's own message beside the
+form it came from, so a refusal an operator had never seen before — *"that would
+leave the platform with no administrator who can sign in"* — explains itself with
+no rule restated in the browser. That is the property D93 set for this screen,
+tested here by a refusal it was never written for (D101).
+
 Departures from what this audit and DESIGN_SYSTEM.md record are deliberate and
-are logged as [DECISIONS.md](DECISIONS.md) D79–D100.
+are logged as [DECISIONS.md](DECISIONS.md) D79–D101.

@@ -3290,3 +3290,73 @@ and `create-admin.js` cannot reinstate a suspended account. Recorded as T89
 rather than fixed here — it needs one judgement this decision did not have to
 make, since a suspension is reversible by any other administrator and a demotion
 is not.
+
+## D101 — One lock, two columns: the last administrator is protected by state, not by endpoint
+
+**Context.** D100 gave `PATCH /admin/users/:id/role` an interlock: under
+`SELECT … FOR UPDATE` on the active-administrator rows, a change that would leave
+none is refused. It also recorded what it left open — the same empty platform is
+reachable through `PATCH /admin/users/:id/status`, because a suspended
+administrator fails `UsersService.isActive` and `JwtAuthGuard` refuses them
+before their role is ever read (T89).
+
+**Reproduced before it was fixed.** Two administrators suspending each other with
+`Promise.all` both returned `200`. The platform was left with `0` active
+administrators and two `ADMIN` rows; both accounts were then refused with
+`AUTH_ACCOUNT_INACTIVE` — on the API and at login. `create-admin.js` reported
+*"Promoted existing account"* and fixed nothing, because it writes `role` and the
+account was locked out by `status`. The way back was `UPDATE users SET
+status='ACTIVE'` against the database, which is the situation ARCHITECTURE.md
+§8.4's *"or by an existing admin"* exists to avoid.
+
+**Decision.** `updateStatus` takes the same lock and makes the same assertion as
+`updateRole`, and both now call **one** private pair — `lockActiveAdmins` and
+`assertAnAdminRemains`.
+
+**Why one shared lock rather than one per endpoint.** This is the part that is
+not a copy-paste. A demotion and a suspension reach the empty platform
+*together*: one request demotes administrator B while another suspends
+administrator A, and each is the only write on its own column. Two lock sets,
+one per endpoint, would not contend — both transactions would take a lock nobody
+else wanted, both would count a survivor, and both would commit. Sharing the
+statement is what makes the invariant a property of the *state* rather than of
+either endpoint. An integration test fires exactly that mixed pair and asserts
+the statuses sort to `[200, 409]`.
+
+**The judgement T89 asked for: refuse, do not warn.** The entry left open whether
+banning the last administrator should be refused outright or merely flagged. A
+warning is not a control, and the failure it would fail to prevent is the one
+whose only recovery is shell access. Refusing costs a legitimate operator
+nothing — they suspend the other administrator first, or appoint a replacement —
+and it is the answer the role column already gives, so the two columns do not
+disagree about the same invariant.
+
+**The assertion is about what is left, never about who is being changed.** That
+is what keeps it from becoming a state machine: an administrator may still be
+suspended, banned, closed and reinstated by another administrator; a
+reinstatement can only raise the count; and an ordinary user's status is
+unaffected by it. Only the last active administrator is protected, and only
+against actually being the last.
+
+**Counted, not assumed.** The count is of `role = ADMIN AND status = ACTIVE`
+rows, taken **after** the write and inside the same transaction, so it describes
+the world the caller is proposing. Throwing rolls the write back along with the
+session revocation and the audit entry — the interlock is the transaction, not a
+compensating update, and a test asserts exactly one suspension is recorded when
+two are attempted.
+
+**The lock is taken unconditionally**, including when the target is an ordinary
+user. Branching on "could this one matter?" would be a second, quieter copy of
+the invariant, and the case it would skip is the one where another transaction is
+concurrently changing who can administer the platform — precisely when the answer
+is hardest to get right. A status change is a rare administrative action (P6).
+
+**Nothing was added to the contract or to the UI.** `ADMIN_LAST_ADMIN_PROTECTED`
+already existed for D100, and `/admin/users/[id]` already renders the API's own
+message beside the form it came from — so the refusal explains itself without a
+rule being restated in the browser, which is the property D93 set for that screen.
+
+**What this closes.** Both columns that can remove an administrator now hold the
+same invariant, under the same lock. The remaining way to reach zero
+administrators is direct SQL, which is not an authorization boundary the
+application can hold.

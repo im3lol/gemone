@@ -175,19 +175,127 @@ export class UsersService {
   // --- Administration ----------------------------------------------------
 
   /**
-   * Changes a user's standing.
+   * The rows every last-administrator decision is made from — TODO T85, T89.
    *
-   * Takes an optional transaction client so the caller can write the audit
-   * entry and revoke sessions in the same transaction (DATABASE.md §10.1).
+   * `SELECT … FOR UPDATE` over exactly the set `assertAnAdminRemains` counts,
+   * taken **before anything is read**. It is what turns a check into a
+   * guarantee: two transactions that both want to change who can administer
+   * the platform contend here, and the second one blocks until the first has
+   * committed, so the count it takes afterwards describes the world the first
+   * actually left.
+   *
+   * Deliberately one statement shared by the role change and the status
+   * change, rather than one per endpoint. They can reach the same empty
+   * platform *together* — an administrator demoted by one request while the
+   * only other one is suspended by another — and two different lock sets would
+   * not see each other. Both take this, so both serialize.
+   *
+   * `users` is this module's own table (DATABASE.md §11.1); the casts name the
+   * Postgres types the Prisma enums map to. Postgres locks rows in scan order,
+   * and both callers issue the identical statement, so there is no ordering
+   * for two transactions to deadlock over.
+   */
+  private async lockActiveAdmins(tx: PrismaTransactionClient): Promise<void> {
+    await tx.$queryRaw`
+      SELECT id FROM users
+       WHERE role = 'ADMIN'::user_role AND status = 'ACTIVE'::user_status
+       FOR UPDATE`;
+  }
+
+  /**
+   * Refuses a write that would leave nobody able to administer the platform.
+   *
+   * Called **after** the write, inside the same transaction, so what it counts
+   * is the world the caller is proposing rather than the one they started in.
+   * Throwing rolls that write back — the interlock is the transaction, not a
+   * compensating update.
+   *
+   * ## Why the count is of ACTIVE administrators
+   *
+   * `JwtAuthGuard` rejects any account that is not `ACTIVE` before its role is
+   * ever consulted, so a suspended administrator is not an administrator who
+   * can act. Counting rows by role alone would let the last usable operator be
+   * suspended or demoted while a banned row kept the total at one, and the
+   * platform would be locked out with the count still reading "fine".
+   *
+   * ## Why zero is unrecoverable, and one is not
+   *
+   * A platform with no administrator who can sign in cannot register a
+   * provider, change a configuration value or approve a payout — and cannot
+   * appoint or reinstate an administrator either, because both of those are
+   * administrative endpoints. `create-admin.js` is not the way back: it sets
+   * `role` and does not touch `status`, so against a suspended administrator it
+   * reports success and changes nothing that matters. The only recovery is SQL
+   * against the database, which is exactly the situation ARCHITECTURE.md §8.4's
+   * "or by an existing admin" exists to avoid.
+   */
+  private async assertAnAdminRemains(
+    tx: PrismaTransactionClient,
+    id: string,
+  ): Promise<void> {
+    const remaining = await tx.user.count({
+      where: { role: 'ADMIN', status: 'ACTIVE' },
+    });
+
+    if (remaining > 0) return;
+
+    throw new DomainError(
+      ERROR_CODES.ADMIN_LAST_ADMIN_PROTECTED,
+      'That would leave the platform with no administrator who can sign in',
+      409,
+      { id },
+    );
+  }
+
+  /**
+   * Changes a user's standing — TODO T89 for the interlock.
+   *
    * The business rule — which transitions are legal — lives here, in the
    * module that owns users; `admin` orchestrates but holds no logic (§4.3).
+   *
+   * ## The last-administrator interlock
+   *
+   * `AdminUsersService.setStatus` already refuses an administrator changing
+   * their **own** standing, so one request cannot reach zero administrators:
+   * the caller is an active administrator and is not the row being written.
+   * **Two can.** Two administrators suspending each other at the same moment
+   * are two legal requests — neither is a self-action, and each one, checked on
+   * its own, leaves an administrator behind. Both commit, and the platform is
+   * left with administrators who all fail `isActive`.
+   *
+   * That is write skew, and it is the same shape T85 found on the role column
+   * (D100): no check made before the write fixes it, because both checks pass.
+   * So this takes the same lock and makes the same assertion — one mechanism,
+   * two columns.
+   *
+   * **Nothing here forbids suspending an administrator.** The assertion is
+   * about what is left, not about who is being changed: another administrator
+   * may still be suspended, banned, closed and reinstated, and reactivating one
+   * can only raise the count. Only the last active administrator is protected,
+   * and only against actually being the last.
+   *
+   * Requires a transaction client — no default. A lock is only a lock for as
+   * long as the transaction lives, and a default of `this.prisma` would take
+   * one and release it a statement later, which reads as protection and is
+   * none.
    */
   async updateStatus(
     id: string,
     status: UserStatus,
-    client: PrismaTransactionClient | PrismaService = this.prisma,
+    tx: PrismaTransactionClient,
   ): Promise<User> {
-    const user = await client.user.findUnique({ where: { id } });
+    /*
+     * Taken unconditionally, including when the target is an ordinary user.
+     * Branching on "could this one matter?" would be a second, quieter copy of
+     * the invariant — and the case it would skip is the case where another
+     * transaction is concurrently changing who can administer the platform,
+     * which is precisely when the answer is hardest to get right. A status
+     * change is a rare administrative action; one indexed statement is not a
+     * cost worth a branch (P6).
+     */
+    await this.lockActiveAdmins(tx);
+
+    const user = await tx.user.findUnique({ where: { id } });
     if (!user) throw userNotFound(id);
 
     if (user.status === status) {
@@ -207,7 +315,11 @@ export class UsersService {
       );
     }
 
-    return client.user.update({ where: { id }, data: { status } });
+    const updated = await tx.user.update({ where: { id }, data: { status } });
+
+    await this.assertAnAdminRemains(tx, id);
+
+    return updated;
   }
 
   /**
@@ -243,12 +355,9 @@ export class UsersService {
    * may be moving (§9.5, D97); the count is taken **after** the write, so what
    * it reports is the world the caller is proposing.
    *
-   * ## Why the count is of ACTIVE administrators
-   *
-   * `JwtAuthGuard` rejects any account that is not `ACTIVE` before the role is
-   * ever consulted, so a suspended administrator is not an administrator who
-   * can act. Counting rows by role alone would let the last usable operator be
-   * demoted while a banned row kept the total at one.
+   * **The lock and the assertion are shared with `updateStatus`** — TODO T89.
+   * A demotion and a suspension can reach the same empty platform together, so
+   * they contend for the same rows rather than each guarding its own column.
    *
    * Requires a transaction client — no default. The lock is only a lock for as
    * long as the transaction lives, and a default of `this.prisma` would take
@@ -260,15 +369,7 @@ export class UsersService {
     role: UserRole,
     tx: PrismaTransactionClient,
   ): Promise<User> {
-    /*
-     * Taken before anything is read, and covering every row the count below
-     * will see. `users` is this module's own table (DATABASE.md §11.1); the
-     * enum casts name the Postgres types the Prisma enums map to.
-     */
-    await tx.$queryRaw`
-      SELECT id FROM users
-       WHERE role = 'ADMIN'::user_role AND status = 'ACTIVE'::user_status
-       FOR UPDATE`;
+    await this.lockActiveAdmins(tx);
 
     const user = await tx.user.findUnique({ where: { id } });
     if (!user) throw userNotFound(id);
@@ -286,20 +387,7 @@ export class UsersService {
 
     const updated = await tx.user.update({ where: { id }, data: { role } });
 
-    const remaining = await tx.user.count({
-      where: { role: 'ADMIN', status: 'ACTIVE' },
-    });
-
-    if (remaining === 0) {
-      // Throwing rolls the update back — the interlock is the transaction, not
-      // a compensating write.
-      throw new DomainError(
-        ERROR_CODES.ADMIN_LAST_ADMIN_PROTECTED,
-        'That would leave the platform with no administrator who can sign in',
-        409,
-        { id },
-      );
-    }
+    await this.assertAnAdminRemains(tx, id);
 
     return updated;
   }
