@@ -1,9 +1,9 @@
-import { USER_STATUSES } from '@gemone/contracts';
+import { USER_ROLES, USER_STATUSES } from '@gemone/contracts';
 import { describe, expect, it } from 'vitest';
 
 import { __testing } from './[id]/+page.server';
 
-const { readStatus, reason } = __testing;
+const { readStatus, readRole, reason } = __testing;
 
 describe('readStatus', () => {
   it.each(Object.values(USER_STATUSES))('forwards %s', (status) => {
@@ -56,5 +56,24 @@ describe('reason', () => {
         ],
       }),
     ).toBe('status: must be one of: ACTIVE; reason: is required');
+  });
+});
+
+describe('readRole', () => {
+  it.each(Object.values(USER_ROLES))('forwards %s', (role) => {
+    expect(readRole(role)).toBe(role);
+  });
+
+  it('refuses anything the contract does not define', () => {
+    /*
+     * The API validates it too, and that is the control — `UpdateUserRoleDto`
+     * answers an unknown role with a 422. This keeps a value that is certain
+     * to be refused from being sent at all, and it is the same guard
+     * `readStatus` applies for the same reason: the role arrives in a hidden
+     * form field, and a hidden field is not a promise about what was posted.
+     */
+    expect(readRole('SUPERADMIN')).toBe(null);
+    expect(readRole('admin')).toBe(null);
+    expect(readRole('')).toBe(null);
   });
 });

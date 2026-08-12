@@ -42,7 +42,7 @@ one phase at a time.
 | `apps/web/src/lib/admin/payout-queue.ts` | The queue's vocabulary, and which transitions a state offers |
 | `apps/web/src/lib/admin/providers.ts` | Provider health, sync outcomes, capabilities, intervals |
 | `apps/web/src/lib/admin/fraud.ts` | What a fired rule looked at, and what each decision does to the points |
-| `apps/web/src/lib/admin/users.ts` | What an account's standing means, which changes the API accepts, and the three balance buckets |
+| `apps/web/src/lib/admin/users.ts` | What an account's standing and role mean, which changes the API accepts, and the three balance buckets |
 | `apps/web/src/lib/admin/settings.ts` | How to render *a* key — never which keys exist |
 | `apps/web/src/routes/dev/ui/` | Visual showcase — development only, 404s in a production build |
 | `apps/web/vite.config.ts` | The Tailwind plugin |

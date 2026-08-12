@@ -40,6 +40,26 @@ export class UpdateUserStatusDto implements UpdateUserStatusRequest {
   reason!: string;
 }
 
+/**
+ * A promotion or a demotion — TODO T85.
+ *
+ * The same shape as a status change and for the same reasons: the role the
+ * account should end in rather than a verb, and a reason long enough to be
+ * worth reading. `@IsIn(ROLES)` is the only vocabulary check there is — which
+ * roles exist is `USER_ROLES` in the contract, and whether *this* change is
+ * permitted is `UsersService.updateRole`, not a validator.
+ */
+export class UpdateUserRoleDto {
+  @IsIn(ROLES, { message: `must be one of: ${ROLES.join(', ')}` })
+  role!: UserRole;
+
+  @IsString()
+  @MinLength(8, { message: 'must explain the change in at least 8 characters' })
+  @MaxLength(500)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  reason!: string;
+}
+
 export class RevokeSessionsDto {
   @IsString()
   @MinLength(8, { message: 'must explain the change in at least 8 characters' })

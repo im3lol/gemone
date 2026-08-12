@@ -63,6 +63,24 @@ export interface UpdateUserStatusRequest {
   reason: string;
 }
 
+/**
+ * Promotion and demotion — ARCHITECTURE.md §8.4, TODO T85.
+ *
+ * §8.4 says admin accounts are provisioned "by a seed script **or by an
+ * existing admin**"; until now only the first half had an implementation, and
+ * `ADMIN_ACTIONS.USER_ROLE_CHANGED` was a word in the audit vocabulary that
+ * nothing wrote.
+ *
+ * The target role, not a verb: "promote" and "demote" are two endpoints
+ * describing one column, and the second one gets forgotten. Sent as the state
+ * the account should end in, exactly as a status change is.
+ */
+export interface UpdateUserRoleRequest {
+  role: UserRole;
+  /** Mandatory, for the reason a status change needs one. */
+  reason: string;
+}
+
 export interface AuditLogEntry {
   id: string;
   adminId: string;

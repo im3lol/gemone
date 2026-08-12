@@ -39,6 +39,17 @@ export const ERROR_CODES = {
   USER_INVALID_STATUS_TRANSITION: 'USER_INVALID_STATUS_TRANSITION',
   /** An admin tried to act on their own account in a way that locks them out. */
   ADMIN_SELF_ACTION_FORBIDDEN: 'ADMIN_SELF_ACTION_FORBIDDEN',
+  /** The account already holds the role the change asks for. */
+  USER_ROLE_UNCHANGED: 'USER_ROLE_UNCHANGED',
+  /**
+   * The change would leave the platform with no administrator able to sign in.
+   *
+   * Distinct from `ADMIN_SELF_ACTION_FORBIDDEN`, which refuses on *who* is
+   * being changed. This one refuses on what the platform would be left with,
+   * and it is reachable only when two administrators demote each other at the
+   * same moment — the case the self-action rule cannot see (§8.4, D100).
+   */
+  ADMIN_LAST_ADMIN_PROTECTED: 'ADMIN_LAST_ADMIN_PROTECTED',
 
   // --- Providers ----------------------------------------------------------
   PROVIDER_NOT_FOUND: 'PROVIDER_NOT_FOUND',

@@ -14,7 +14,13 @@ import type { AuthenticatedUser } from '../auth/authenticated-user';
 import { CurrentUser, Roles } from '../auth/decorators';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminUsersService, type AdminActionContext } from './admin-users.service';
-import { ListAuditLogDto, ListUsersDto, RevokeSessionsDto, UpdateUserStatusDto } from './dto/admin.dto';
+import {
+  ListAuditLogDto,
+  ListUsersDto,
+  RevokeSessionsDto,
+  UpdateUserRoleDto,
+  UpdateUserStatusDto,
+} from './dto/admin.dto';
 
 /**
  * The administrative surface — ARCHITECTURE.md §8.4, §19.1.
@@ -76,6 +82,28 @@ export class AdminController {
     @Req() request: Request,
   ): Promise<AdminUserSummary> {
     return this.adminUsers.setStatus(id, dto.status, dto.reason, contextOf(admin, request));
+  }
+
+  /**
+   * Appointing and removing administrators — TODO T85, ARCHITECTURE.md §8.4.
+   *
+   * Its own endpoint rather than a field on the status change: they are
+   * different questions with different refusals, and a single `PATCH
+   * /admin/users/:id` taking both would make "suspend this account" and "make
+   * this person an administrator" one request that half-succeeds.
+   *
+   * Every refusal it can give is a rule that lives behind it — the role check
+   * on the class, the id pipe, the DTO's vocabulary, and `updateRole`'s
+   * interlock. There is nothing decided in this method.
+   */
+  @Patch('users/:id/role')
+  async setUserRole(
+    @Param('id', createUuidPipe()) id: string,
+    @Body() dto: UpdateUserRoleDto,
+    @CurrentUser() admin: AuthenticatedUser,
+    @Req() request: Request,
+  ): Promise<AdminUserSummary> {
+    return this.adminUsers.setRole(id, dto.role, dto.reason, contextOf(admin, request));
   }
 
   @Post('users/:id/revoke-sessions')

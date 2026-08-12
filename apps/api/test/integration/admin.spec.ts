@@ -127,6 +127,11 @@ describe('admin foundation (integration)', () => {
       await request(server()).get(`/admin/users/${target.id}/balance`).set(auth).expect(403);
       await request(server()).get('/admin/audit-log').set(auth).expect(403);
       await request(server())
+        .patch(`/admin/users/${target.id}/role`)
+        .set(auth)
+        .send({ role: 'ADMIN', reason: 'testing access control' })
+        .expect(403);
+      await request(server())
         .patch(`/admin/users/${target.id}/status`)
         .set(auth)
         .send({ status: 'SUSPENDED', reason: 'testing access control' })
@@ -741,6 +746,332 @@ describe('admin foundation (integration)', () => {
         .get('/users/me')
         .set('Authorization', `Bearer ${user.token}`)
         .expect(200);
+    });
+  });
+
+  /**
+   * Appointing and removing administrators — TODO T85, ARCHITECTURE.md §8.4.
+   *
+   * §8.4 has always said admin accounts are provisioned "by a seed script or by
+   * an existing admin", and only the seed script existed. What is worth
+   * verifying is not that a column changes: it is that the change takes effect
+   * on the next request, that it is recorded, and that the platform cannot be
+   * left with nobody able to administer it — including by two administrators
+   * acting at the same moment, which no check made before a write can catch.
+   */
+  describe('role management', () => {
+    const REASON = 'appointing a second operator for the launch';
+
+    it('promotes an account, and the promotion is usable immediately', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+
+      await request(server()).get('/admin/users').set({ Authorization: `Bearer ${user.token}` }).expect(403);
+
+      const response = await request(server())
+        .patch(`/admin/users/${user.id}/role`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ role: 'ADMIN', reason: REASON })
+        .expect(200);
+
+      expect(response.body.role).toBe('ADMIN');
+
+      /*
+       * The same access token that was refused a moment ago. `JwtAuthGuard`
+       * reads the role from the database on every request rather than from the
+       * token (§8.3), so an appointment does not wait for a token to expire —
+       * and the person being appointed does not have to sign in again.
+       */
+      await request(server())
+        .get('/admin/users')
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(200);
+    });
+
+    it('demotes an account, and the admin surface closes on the next request', async () => {
+      const admin = await createUser('ADMIN');
+      const other = await createUser('ADMIN');
+
+      await request(server()).get('/admin/users').set({ Authorization: `Bearer ${other.token}` }).expect(200);
+
+      await request(server())
+        .patch(`/admin/users/${other.id}/role`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ role: 'USER', reason: 'they have left the operations team' })
+        .expect(200);
+
+      await request(server())
+        .get('/admin/users')
+        .set('Authorization', `Bearer ${other.token}`)
+        .expect(403);
+    });
+
+    it('leaves a demoted account able to use the rest of the application', async () => {
+      const admin = await createUser('ADMIN');
+      const other = await createUser('ADMIN');
+
+      const sessions = () =>
+        prisma.refreshToken.count({ where: { userId: other.id, revokedAt: null } });
+      const before = await sessions();
+
+      await request(server())
+        .patch(`/admin/users/${other.id}/role`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ role: 'USER', reason: 'they have left the operations team' })
+        .expect(200);
+
+      /*
+       * Deliberately not revoked. A suspension revokes because the account must
+       * stop being able to act at all; a demotion closes the admin surface and
+       * nothing else, and signing the person out of their own account would be
+       * a second consequence hidden inside this one.
+       */
+      await request(server())
+        .get('/users/me')
+        .set('Authorization', `Bearer ${other.token}`)
+        .expect(200);
+
+      expect(await sessions()).toBe(before);
+      expect(before).toBeGreaterThan(0);
+    });
+
+    it('records who did it, to whom, from what, to what, and why', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+
+      await request(server())
+        .patch(`/admin/users/${user.id}/role`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ role: 'ADMIN', reason: REASON })
+        .expect(200);
+
+      // The action existed in the vocabulary since Feature 2 and nothing wrote
+      // it — that was half of what T85 was.
+      const entry = await prisma.adminAuditLog.findFirst({
+        where: { action: 'user.role_changed' },
+      });
+
+      expect(entry).toMatchObject({
+        adminId: admin.id,
+        targetType: 'user',
+        targetId: user.id,
+        before: { role: 'USER' },
+        after: { role: 'ADMIN' },
+        reason: REASON,
+      });
+    });
+
+    it('requires a reason of a length worth reading', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+      const auth = { Authorization: `Bearer ${admin.token}` };
+
+      await request(server())
+        .patch(`/admin/users/${user.id}/role`)
+        .set(auth)
+        .send({ role: 'ADMIN' })
+        .expect(422);
+
+      await request(server())
+        .patch(`/admin/users/${user.id}/role`)
+        .set(auth)
+        .send({ role: 'ADMIN', reason: 'x' })
+        .expect(422);
+
+      // Nothing happened on either attempt.
+      expect((await prisma.user.findUnique({ where: { id: user.id } }))?.role).toBe('USER');
+      expect(await prisma.adminAuditLog.count()).toBe(0);
+    });
+
+    it('rejects a role the contract does not define', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+
+      await request(server())
+        .patch(`/admin/users/${user.id}/role`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ role: 'SUPERADMIN', reason: REASON })
+        .expect(422);
+    });
+
+    it('refuses a change to the role the account already holds', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+
+      const response = await request(server())
+        .patch(`/admin/users/${user.id}/role`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ role: 'USER', reason: REASON })
+        .expect(409);
+
+      expect(response.body.error.code).toBe(ERROR_CODES.USER_ROLE_UNCHANGED);
+      // An audit entry recording a change that did not happen is worse than no
+      // entry: it is a trail that disagrees with the account.
+      expect(await prisma.adminAuditLog.count()).toBe(0);
+    });
+
+    it('refuses to let an administrator demote themselves', async () => {
+      const admin = await createUser('ADMIN');
+
+      const response = await request(server())
+        .patch(`/admin/users/${admin.id}/role`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ role: 'USER', reason: 'stepping back from operations' })
+        .expect(403);
+
+      /*
+       * The same rule `setStatus` applies, and more final here: a suspended
+       * administrator can be reinstated by another administrator, a demoted one
+       * cannot appoint themselves back.
+       */
+      expect(response.body.error.code).toBe(ERROR_CODES.ADMIN_SELF_ACTION_FORBIDDEN);
+      expect((await prisma.user.findUnique({ where: { id: admin.id } }))?.role).toBe('ADMIN');
+      expect(await prisma.adminAuditLog.count()).toBe(0);
+    });
+
+    it('404s on an unknown account and 422s on a malformed id', async () => {
+      const admin = await createUser('ADMIN');
+      const auth = { Authorization: `Bearer ${admin.token}` };
+
+      await request(server())
+        .patch('/admin/users/0192f0a0-0000-7000-8000-00000000dead/role')
+        .set(auth)
+        .send({ role: 'ADMIN', reason: REASON })
+        .expect(404);
+
+      await request(server())
+        .patch('/admin/users/not-a-uuid/role')
+        .set(auth)
+        .send({ role: 'ADMIN', reason: REASON })
+        .expect(422);
+    });
+
+    it('refuses a signed-in non-admin, and an unauthenticated caller', async () => {
+      const user = await createUser('USER');
+      const target = await createUser('USER');
+      const body = { role: 'ADMIN', reason: REASON };
+
+      // The obvious attack this endpoint invites: promote yourself.
+      const self = await request(server())
+        .patch(`/admin/users/${user.id}/role`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .send(body)
+        .expect(403);
+
+      expect(self.body.error.code).toBe(ERROR_CODES.FORBIDDEN);
+      expect((await prisma.user.findUnique({ where: { id: user.id } }))?.role).toBe('USER');
+
+      await request(server())
+        .patch(`/admin/users/${target.id}/role`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .send(body)
+        .expect(403);
+
+      await request(server()).patch(`/admin/users/${target.id}/role`).send(body).expect(401);
+    });
+
+    it('cannot be reached through the status endpoint', async () => {
+      const admin = await createUser('ADMIN');
+      const user = await createUser('USER');
+
+      /*
+       * The validation pipe strips unknown properties and the DTO declares no
+       * `role`, so this is a status change and nothing else. Worth pinning:
+       * a whitelist that stopped forbidding extras would make every status
+       * change a possible promotion.
+       */
+      await request(server())
+        .patch(`/admin/users/${user.id}/status`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ status: 'SUSPENDED', reason: REASON, role: 'ADMIN' })
+        .expect(422);
+
+      expect((await prisma.user.findUnique({ where: { id: user.id } }))?.role).toBe('USER');
+    });
+
+    /**
+     * The case the self-action rule cannot see.
+     *
+     * Two administrators demoting each other are two legal requests: neither is
+     * a self-action, and each one, checked on its own, leaves an administrator
+     * behind. Only a lock makes the second request see what the first one did.
+     */
+    it('never lets two administrators demote each other into an empty platform', async () => {
+      const first = await createUser('ADMIN');
+      const second = await createUser('ADMIN');
+
+      const results = await Promise.all([
+        request(server())
+          .patch(`/admin/users/${second.id}/role`)
+          .set('Authorization', `Bearer ${first.token}`)
+          .send({ role: 'USER', reason: 'reorganising the operations team' }),
+        request(server())
+          .patch(`/admin/users/${first.id}/role`)
+          .set('Authorization', `Bearer ${second.token}`)
+          .send({ role: 'USER', reason: 'reorganising the operations team' }),
+      ]);
+
+      expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+
+      const refused = results.find((r) => r.status === 409);
+      expect(refused?.body.error.code).toBe(ERROR_CODES.ADMIN_LAST_ADMIN_PROTECTED);
+
+      // One administrator left, and exactly one demotion recorded.
+      expect(await prisma.user.count({ where: { role: 'ADMIN', status: 'ACTIVE' } })).toBe(1);
+      expect(await prisma.adminAuditLog.count({ where: { action: 'user.role_changed' } })).toBe(1);
+    });
+
+    it('does not count an administrator who cannot sign in', async () => {
+      const first = await createUser('ADMIN');
+      const second = await createUser('ADMIN');
+      const suspended = await createUser('ADMIN');
+
+      await prisma.user.update({
+        where: { id: suspended.id },
+        data: { status: 'SUSPENDED' },
+      });
+
+      /*
+       * With a suspended administrator present, counting rows by role alone
+       * would report one survivor and let both demotions through — leaving the
+       * platform with an administrator who cannot sign in, which is none.
+       * `JwtAuthGuard` refuses a non-ACTIVE account before the role is ever
+       * consulted, so that is what the interlock counts.
+       */
+      const results = await Promise.all([
+        request(server())
+          .patch(`/admin/users/${second.id}/role`)
+          .set('Authorization', `Bearer ${first.token}`)
+          .send({ role: 'USER', reason: 'reorganising the operations team' }),
+        request(server())
+          .patch(`/admin/users/${first.id}/role`)
+          .set('Authorization', `Bearer ${second.token}`)
+          .send({ role: 'USER', reason: 'reorganising the operations team' }),
+      ]);
+
+      expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+      expect(await prisma.user.count({ where: { role: 'ADMIN', status: 'ACTIVE' } })).toBe(1);
+    });
+
+    it('lets an administrator be demoted while another one remains', async () => {
+      const first = await createUser('ADMIN');
+      const second = await createUser('ADMIN');
+      const third = await createUser('ADMIN');
+
+      // The interlock refuses the *last* one, not a demotion in general.
+      await request(server())
+        .patch(`/admin/users/${second.id}/role`)
+        .set('Authorization', `Bearer ${first.token}`)
+        .send({ role: 'USER', reason: 'reorganising the operations team' })
+        .expect(200);
+
+      await request(server())
+        .patch(`/admin/users/${third.id}/role`)
+        .set('Authorization', `Bearer ${first.token}`)
+        .send({ role: 'USER', reason: 'reorganising the operations team' })
+        .expect(200);
+
+      expect(await prisma.user.count({ where: { role: 'ADMIN', status: 'ACTIVE' } })).toBe(1);
     });
   });
 

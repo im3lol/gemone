@@ -7,6 +7,7 @@ import {
   balanceBuckets,
   isSelf,
   lifetimeFigures,
+  roleChangeFor,
   roleLabel,
   shortId,
   statusChangesFor,
@@ -200,5 +201,61 @@ describe('lifetimeFigures', () => {
     for (const figure of lifetimeFigures(null)) {
       expect(figure.points).toBeUndefined();
     }
+  });
+});
+
+/**
+ * Appointing and removing administrators — TODO T85.
+ *
+ * The words on a control that grants somebody every payout, every provider and
+ * every configuration value. What is worth testing is that the button offers
+ * the role the account does *not* hold, that a demotion is not described as a
+ * suspension, and that an unrecognised role produces no button at all.
+ */
+describe('roleChangeFor', () => {
+  it('offers the other role, never the one the account already holds', () => {
+    // A control whose success is indistinguishable from doing nothing — the
+    // same reason `statusChangesFor` omits the current status.
+    expect(roleChangeFor('USER')?.to).toBe('ADMIN');
+    expect(roleChangeFor('ADMIN')?.to).toBe('USER');
+  });
+
+  it('labels each direction with the act, and says what it does', () => {
+    for (const role of USER_ROLES_IN_ORDER) {
+      const change = roleChangeFor(role);
+
+      expect(change?.verb).not.toBe('');
+      expect(change?.hint).not.toBe('');
+    }
+  });
+
+  it('styles only the removal as destructive', () => {
+    expect(roleChangeFor('USER')?.variant).toBe('primary');
+    expect(roleChangeFor('ADMIN')?.variant).toBe('danger');
+  });
+
+  it('says a demotion is not a suspension, because the two are confused', () => {
+    /*
+     * `AdminUsersService.setRole` revokes nothing: a demoted account keeps its
+     * sessions, its points and its standing, and only the admin surface
+     * closes. An operator who expected a suspension would not follow up.
+     */
+    const hint = roleChangeFor('ADMIN')?.hint ?? '';
+
+    expect(hint).toMatch(/not a suspension/i);
+    expect(hint).toMatch(/points/i);
+  });
+
+  it('promises no more than the API delivers about when it takes effect', () => {
+    // `JwtAuthGuard` reads the role from the database on every request, so the
+    // change lands on the next one — not at the next sign-in.
+    expect(roleChangeFor('USER')?.hint).toMatch(/next request/i);
+    expect(roleChangeFor('ADMIN')?.hint).toMatch(/next request/i);
+  });
+
+  it('offers nothing for a role this build does not recognise', () => {
+    // Null rather than a guess: a button labelled from a fallback would be a
+    // privilege change described by a word nobody chose.
+    expect(roleChangeFor('OWNER' as never)).toBe(null);
   });
 });

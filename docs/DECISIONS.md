@@ -3217,3 +3217,76 @@ a chargeback, a withdrawal — and each has its own surface. A balance an admin
 could edit would be a way to move money with no event behind it, which is what
 the transaction history exists to make impossible; the read is the whole
 feature, and a test asserts `PATCH` and `POST` on the same path are 404.
+
+## D100 — An administrator is appointed by an administrator, under a row lock
+
+**Context.** ARCHITECTURE.md §8.4 has said since the first draft that admin
+accounts are provisioned "by a seed script **or by an existing admin**". Only
+the seed script was ever built, so appointing a second operator meant somebody
+with server access running `create-admin.js` — and `ADMIN_ACTIONS.
+USER_ROLE_CHANGED` sat in the audit vocabulary from Feature 2 with nothing
+writing it. T85 recorded the gap and declined to close it, on the grounds that
+"adding one would mean inventing what demoting the last admin does".
+
+**Decision.** `PATCH /admin/users/:id/role`, taking the role the account should
+end in and a reason, writing the same column `create-admin.js` writes and the
+audit action that was already named.
+
+**The open question did not need inventing.** `setStatus` has always refused
+`targetUserId === adminId`, because an administrator locking themselves out of a
+single-admin deployment is unrecoverable without database access. Applying that
+existing rule to the role makes a single request unable to reach zero
+administrators, and it is the *more* necessary of the two: another administrator
+can reinstate a suspended one, and nobody can appoint themselves back.
+
+**What the self-action rule cannot see is two requests.** Two administrators
+demoting each other at the same moment are two legal calls. Each one, checked on
+its own, leaves an administrator behind; both commit; the platform has none —
+and cannot appoint one, because appointing is this endpoint. That is write skew,
+and no check made before the write fixes it, because both checks pass.
+
+So `UsersService.updateRole` takes `SELECT … FOR UPDATE` on the administrator
+rows before reading anything, and counts **after** the write, inside the same
+transaction: the second request blocks until the first commits and then counts
+the world the first one actually left. The mechanism is the one D97 established
+for the same shape of race, and the refusal — `ADMIN_LAST_ADMIN_PROTECTED`, 409 —
+is a rollback rather than a compensating write. An integration test fires both
+demotions with `Promise.all` and asserts the statuses sort to exactly
+`[200, 409]` with one administrator and one audit entry left.
+
+**The count is of *active* administrators.** `JwtAuthGuard` refuses any account
+that is not `ACTIVE` before the role is ever consulted, so a suspended
+administrator is not an administrator who can act. Counting rows by role alone
+would let the last usable operator be demoted while a banned row kept the total
+at one — a test with a suspended administrator present pins the difference,
+because that is the case where the two counts disagree.
+
+**Where the rule lives.** In `users`, not in `admin`. §4.3 makes `admin` a
+composition layer that holds no logic, and a rule *about the users table* can
+only be enforced by the module that owns it — the same reasoning `updateStatus`
+already carried. `updateRole` takes a required transaction client with no
+default, because a lock taken outside a transaction is released a statement
+later, which reads as protection and is none.
+
+**No session revocation, and that is the difference from a suspension.**
+`setStatus` revokes because a suspended account must stop being able to act at
+all. A demoted account keeps everything it had as a user; only the admin surface
+closes, and it closes on the very next request because the guard reads the role
+from the database rather than from the token (§8.3, §14.2). Revoking would sign
+the person out of their own account — a second, unrelated consequence hidden
+inside this one. The screen's copy says so, and a test asserts the sessions
+survive.
+
+**Its own endpoint, not a field on the status change.** They are different
+questions with different refusals, and one `PATCH /admin/users/:id` taking both
+would make "suspend this account" and "make this person an administrator" a
+single request that can half-succeed. A test pins that the status endpoint still
+strips a `role` it is sent, because a whitelist that stopped forbidding extras
+would turn every status change into a possible promotion.
+
+**What this leaves open.** The symmetric hole on the status endpoint: two
+administrators suspending each other concurrently reach the same empty platform,
+and `create-admin.js` cannot reinstate a suspended account. Recorded as T89
+rather than fixed here — it needs one judgement this decision did not have to
+make, since a suspension is reversible by any other administrator and a demotion
+is not.

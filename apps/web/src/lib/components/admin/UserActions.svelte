@@ -1,10 +1,20 @@
 <!--
   What an administrator may do to an account — ARCHITECTURE.md §8.4.
 
-  Two things, because the API offers two: change the standing
-  (`PATCH /admin/users/:id/status`) and end every session
-  (`POST /admin/users/:id/revoke-sessions`). Both require a reason of at least
-  eight characters, enforced by the API and marked required here.
+  Three things, because the API offers three: change the standing
+  (`PATCH /admin/users/:id/status`), change the role
+  (`PATCH /admin/users/:id/role`), and end every session
+  (`POST /admin/users/:id/revoke-sessions`). All three require a reason of at
+  least eight characters, enforced by the API and marked required here.
+
+  ## Two cards, because they are two decisions
+
+  The standing is about whether an account may act at all; the role is about
+  what it may reach. Putting the promotion under a heading that says "Standing"
+  would make appointing an administrator look like a variety of suspension, and
+  the reason box beneath it is the one an operator is asked to justify — so the
+  two are separated, and the role card carries its own copy about what a
+  demotion does *not* do (T85).
 
   ## One form per status, named after the transition
 
@@ -36,7 +46,14 @@
   import type { AdminUserSummary } from '@gemone/contracts';
 
   import { Alert, Button, Card, Input } from '$lib/components/ui';
-  import { statusChangesFor, statusVariant, statusVerb, userState } from '$lib/admin/users';
+  import {
+    roleChangeFor,
+    roleLabel,
+    statusChangesFor,
+    statusVariant,
+    statusVerb,
+    userState,
+  } from '$lib/admin/users';
 
   import type { UserActionResult } from './types';
 
@@ -51,26 +68,34 @@
 
   const current = $derived(userState(account.status));
   const changes = $derived(statusChangesFor(account.status));
+  const roleChange = $derived(roleChangeFor(account.role));
 
   /** Which action is in flight, or `null`. Disables every form, not just its own. */
   let submitting = $state<string | null>(null);
 </script>
 
+<div class="flex flex-col gap-5">
 <Card as="section" padding="lg" class="flex flex-col gap-4" aria-labelledby="actions-title">
   <div>
     <h2 id="actions-title" class="gm-card-title">Standing</h2>
     <p class="gm-subtitle mt-1">{current.hint}</p>
   </div>
 
-  {#if result?.ok}
-    <Alert variant="success" title="Recorded">{result.message}</Alert>
-  {:else if result}
-    <!--
-      The API's own message. Every rule about what a status change requires
-      lives in `UpdateUserStatusDto` and `AdminUsersService`; restating one
-      here would be a second copy of a rule that lives somewhere else.
-    -->
-    <Alert variant="error" title="That could not be recorded">{result.message}</Alert>
+  <!--
+    Only this card's own outcomes. A refused promotion announced above the
+    suspension buttons would read as a refused suspension.
+  -->
+  {#if result && result.action !== 'role'}
+    {#if result.ok}
+      <Alert variant="success" title="Recorded">{result.message}</Alert>
+    {:else}
+      <!--
+        The API's own message. Every rule about what a status change requires
+        lives in `UpdateUserStatusDto` and `AdminUsersService`; restating one
+        here would be a second copy of a rule that lives somewhere else.
+      -->
+      <Alert variant="error" title="That could not be recorded">{result.message}</Alert>
+    {/if}
   {/if}
 
   {#if self}
@@ -157,3 +182,83 @@
     </Button>
   </form>
 </Card>
+
+<!--
+  The role — TODO T85, ARCHITECTURE.md §8.4.
+
+  One button, because there are two roles and the account holds one of them.
+  What the change is called and what it does come from `$lib/admin/users.ts`;
+  whether it is permitted comes from the API, which refuses an administrator
+  changing their own role and refuses any change that would leave nobody able
+  to administer the platform.
+-->
+<Card as="section" padding="lg" class="flex flex-col gap-4" aria-labelledby="role-title">
+  <div>
+    <h2 id="role-title" class="gm-card-title">Role</h2>
+    <p class="gm-subtitle mt-1">
+      This account is {roleLabel(account.role).toLowerCase()}-level. §8.4: administrators are
+      provisioned by a seed script or by an existing administrator — never by signing up.
+    </p>
+  </div>
+
+  {#if result?.action === 'role'}
+    {#if result.ok}
+      <Alert variant="success" title="Recorded">{result.message}</Alert>
+    {:else}
+      <Alert variant="error" title="That could not be recorded">{result.message}</Alert>
+    {/if}
+  {/if}
+
+  {#if self}
+    <Alert variant="info" title="This is your own account">
+      An administrator cannot change their own role. It is the more final half of the same
+      rule that protects the standing: another administrator can reinstate a suspended one,
+      and nobody can appoint themselves back.
+    </Alert>
+  {:else if !roleChange}
+    <!-- A role this build has no words for. Better than a button labelled with a guess. -->
+    <p class="gm-caption">
+      This account holds a role this version does not recognise, so no change is offered.
+    </p>
+  {:else}
+    <form
+      method="POST"
+      action="?/role"
+      class="flex flex-col gap-2 sm:flex-row sm:items-end"
+      use:enhance={({ cancel }) => {
+        if (submitting) return cancel();
+        submitting = 'role';
+
+        return async ({ update }) => {
+          submitting = null;
+          // Re-runs the load, which is what refreshes the badge in the header
+          // and the button this form is made of.
+          await update();
+        };
+      }}
+    >
+      <input type="hidden" name="role" value={roleChange.to} />
+
+      <Input
+        label={roleChange.verb}
+        name="reason"
+        hint={roleChange.hint}
+        placeholder="Why?"
+        required
+        maxlength={500}
+        autocomplete="off"
+        class="flex-1"
+      />
+
+      <Button
+        type="submit"
+        variant={roleChange.variant}
+        loading={submitting === 'role'}
+        disabled={submitting !== null}
+      >
+        {submitting === 'role' ? 'Recording…' : roleChange.verb}
+      </Button>
+    </form>
+  {/if}
+</Card>
+</div>

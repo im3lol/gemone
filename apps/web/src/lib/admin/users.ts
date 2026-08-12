@@ -113,6 +113,58 @@ export function isSelf(userId: string, adminId: string | undefined): boolean {
 }
 
 /**
+ * Appointing and removing administrators — TODO T85.
+ *
+ * ARCHITECTURE.md §8.4: admin accounts are provisioned "by a seed script or by
+ * an existing admin". The second half is `PATCH /admin/users/:id/role`, and
+ * this is what a screen says about it.
+ *
+ * **One change, because there are two roles.** The target is derived rather
+ * than chosen: a select with two options, one of which the account already
+ * holds, is a control whose success is indistinguishable from doing nothing —
+ * the same reason `statusChangesFor` omits the current status.
+ *
+ * **Nothing here decides whether the change is allowed.** The refusals live in
+ * the API: `AdminUsersService.setRole` rejects an administrator changing their
+ * own role, and `UsersService.updateRole` refuses under a row lock any change
+ * that would leave no administrator able to sign in. This module supplies
+ * words.
+ */
+export interface RoleChange {
+  /** The role the account would end in. */
+  to: UserRole;
+  /** The button, as the act about to be performed. */
+  verb: string;
+  /** What it does — and, as importantly, what it does not do. */
+  hint: string;
+  variant: 'primary' | 'danger';
+}
+
+const ROLE_CHANGES: Record<UserRole, RoleChange> = {
+  USER: {
+    to: USER_ROLES.ADMIN,
+    verb: 'Make administrator',
+    hint: 'Full access to the admin surface: providers, configuration, fraud decisions and every withdrawal. It takes effect on their next request, without them signing in again.',
+    variant: 'primary',
+  },
+  ADMIN: {
+    to: USER_ROLES.USER,
+    verb: 'Remove administrator access',
+    hint: 'The admin surface closes on their next request. The account, its sessions and its points are untouched — this is not a suspension.',
+    variant: 'danger',
+  },
+};
+
+/**
+ * The fallback exists because the role is a wire value, the same reason
+ * `userState` has one: a lookup returning `undefined` would render a button
+ * labelled "undefined" beside somebody's account.
+ */
+export function roleChangeFor(role: UserRole): RoleChange | null {
+  return ROLE_CHANGES[role] ?? null;
+}
+
+/**
  * A verb for the change, rather than the status as a noun.
  *
  * "Ban" is what the operator is about to do; "Banned" is what the account will

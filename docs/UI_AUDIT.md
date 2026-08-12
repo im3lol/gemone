@@ -982,5 +982,15 @@ three buckets and never a fourth — `total` exists so nobody adds them up wrong
 not so an operator can confirm a withdrawal against points still inside a hold
 period (D99).
 
+Phase 14 closes **T85**. `/admin/users/[id]` grows a second card in its left
+column — the standing and the role are two decisions, and a promotion under a
+heading that says "Standing" would read as a variety of suspension. One button,
+because there are two roles and the account holds one of them, styled
+destructive only in the direction that removes access, and carrying the sentence
+a demotion most needs: it is not a suspension, and the account's sessions and
+points are untouched. On the administrator's own account the card explains
+instead of offering a control, the pattern the standing card already used —
+and the API remains the control (D100).
+
 Departures from what this audit and DESIGN_SYSTEM.md record are deliberate and
-are logged as [DECISIONS.md](DECISIONS.md) D79–D99.
+are logged as [DECISIONS.md](DECISIONS.md) D79–D100.

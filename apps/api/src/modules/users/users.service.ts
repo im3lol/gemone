@@ -5,6 +5,7 @@ import {
   type ListUsersQuery,
   type Paginated,
   type UserProfile,
+  type UserRole,
   type UserStatus,
 } from '@gemone/contracts';
 import { v7 as uuidv7 } from 'uuid';
@@ -207,6 +208,100 @@ export class UsersService {
     }
 
     return client.user.update({ where: { id }, data: { status } });
+  }
+
+  /**
+   * Promotes or demotes an account — TODO T85, ARCHITECTURE.md §8.4.
+   *
+   * §8.4 has always said admin accounts are provisioned "by a seed script or
+   * **by an existing admin**". `create-admin.js` is the first half; this is the
+   * second, and it writes the same column that script writes.
+   *
+   * The rule lives here rather than in `admin` for the reason `updateStatus`
+   * records: `admin` orchestrates and holds no logic (§4.3), and the module
+   * that owns the table is the one that can enforce a rule *about the table*.
+   *
+   * ## The interlock, and why it needs the lock above it
+   *
+   * A platform with no administrator who can sign in cannot register a
+   * provider, change a configuration value or approve a payout — and cannot
+   * appoint a new administrator either, because that is this endpoint. The only
+   * recovery is shell access to run `create-admin`, which is exactly the
+   * situation §8.4's second half exists to avoid.
+   *
+   * `AdminUsersService.setRole` already refuses to let an administrator demote
+   * themselves, so a single request cannot reach zero. **Two can.** Two
+   * administrators demoting each other at the same moment are two legal
+   * requests: each reads one other administrator, each writes, and the
+   * platform is left with none. That is write skew, and no amount of checking
+   * before the write fixes it — both checks pass.
+   *
+   * So every role change first takes `FOR UPDATE` on the rows it is about to
+   * count. The second transaction blocks until the first commits and then
+   * counts what is actually there. The mechanism is the one this codebase
+   * already uses wherever a decision is made from a row that another writer
+   * may be moving (§9.5, D97); the count is taken **after** the write, so what
+   * it reports is the world the caller is proposing.
+   *
+   * ## Why the count is of ACTIVE administrators
+   *
+   * `JwtAuthGuard` rejects any account that is not `ACTIVE` before the role is
+   * ever consulted, so a suspended administrator is not an administrator who
+   * can act. Counting rows by role alone would let the last usable operator be
+   * demoted while a banned row kept the total at one.
+   *
+   * Requires a transaction client — no default. The lock is only a lock for as
+   * long as the transaction lives, and a default of `this.prisma` would take
+   * one and release it a statement later, which reads as protection and is
+   * none.
+   */
+  async updateRole(
+    id: string,
+    role: UserRole,
+    tx: PrismaTransactionClient,
+  ): Promise<User> {
+    /*
+     * Taken before anything is read, and covering every row the count below
+     * will see. `users` is this module's own table (DATABASE.md §11.1); the
+     * enum casts name the Postgres types the Prisma enums map to.
+     */
+    await tx.$queryRaw`
+      SELECT id FROM users
+       WHERE role = 'ADMIN'::user_role AND status = 'ACTIVE'::user_status
+       FOR UPDATE`;
+
+    const user = await tx.user.findUnique({ where: { id } });
+    if (!user) throw userNotFound(id);
+
+    if (user.role === role) {
+      // A button whose success is indistinguishable from doing nothing, and an
+      // audit entry recording a change that did not happen.
+      throw new DomainError(
+        ERROR_CODES.USER_ROLE_UNCHANGED,
+        `User is already ${role}`,
+        409,
+        { role },
+      );
+    }
+
+    const updated = await tx.user.update({ where: { id }, data: { role } });
+
+    const remaining = await tx.user.count({
+      where: { role: 'ADMIN', status: 'ACTIVE' },
+    });
+
+    if (remaining === 0) {
+      // Throwing rolls the update back — the interlock is the transaction, not
+      // a compensating write.
+      throw new DomainError(
+        ERROR_CODES.ADMIN_LAST_ADMIN_PROTECTED,
+        'That would leave the platform with no administrator who can sign in',
+        409,
+        { id },
+      );
+    }
+
+    return updated;
   }
 
   /**

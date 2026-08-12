@@ -112,7 +112,7 @@ export interface AccountActivity {
 
 /** What a user action hands back. A discriminated union, for D83's reason. */
 export type UserActionResult =
-  | { ok: true; action: 'status' | 'revoke'; message: string }
+  | { ok: true; action: 'status' | 'revoke' | 'role'; message: string }
   | { ok: false; action: string; message: string };
 
 /**

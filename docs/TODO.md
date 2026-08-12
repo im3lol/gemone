@@ -2115,7 +2115,7 @@ both columns, labelled as the ledger's own answer.
 ---
 
 ### T85 — An account's role cannot be changed through the API
-**Status:** open · **Raised:** UI phase 11 (admin users) · **Priority:** low
+**Status:** RESOLVED in UI phase 14 · **Raised:** UI phase 11 (admin users) · **Priority:** low
 
 `ADMIN_ACTIONS.USER_ROLE_CHANGED` is in the audit vocabulary and nothing writes
 it. Promotion is `create-admin.js`, which ARCHITECTURE.md §8.4 intends —
@@ -2128,6 +2128,29 @@ recovery story attached, not a form field.
 
 **Trigger:** a deployment with more than one operator, where provisioning by
 shell is a person waiting on somebody with server access.
+
+**Resolved in phase 14, and the open question had an answer already in the
+codebase.** See D100. `PATCH /admin/users/:id/role` writes the column
+`create-admin.js` writes and the audit action that had been in the vocabulary
+since Feature 2 with nothing writing it.
+
+What this entry called "inventing what demoting the last admin does" turned out
+not to need inventing. `setStatus` already refuses `targetUserId === adminId`,
+and applying the same rule to the role makes a single request unable to reach
+zero administrators. What it cannot see is **two** requests: two administrators
+demoting each other are two legal calls that each leave one behind, and both
+commit. So `updateRole` takes `FOR UPDATE` on the administrator rows before it
+counts them — the mechanism D97 already established for this exact shape of
+race — and counts **after** the write, so the number it reads is the world the
+caller is proposing.
+
+The count is of *active* administrators, because `JwtAuthGuard` refuses a
+non-ACTIVE account before the role is ever consulted: a suspended administrator
+is not an administrator who can act, and counting by role alone would let the
+last usable operator be demoted while a banned row kept the total at one.
+
+Sessions are deliberately **not** revoked — a demotion closes the admin surface
+on the next request and changes nothing else about the account.
 
 ---
 
@@ -2244,6 +2267,43 @@ the same mechanism `assertTransition` and `resolveHold` already use for "two
 admins in the same second". Without it this is check-then-act and both writers
 pass. The lock is held for one write transaction, never across an operator's
 thinking time — the precondition is what covers that.
+
+---
+
+### T89 — A status change has no last-administrator interlock
+**Status:** open · **Raised:** UI phase 14 (T85) · **Priority:** medium
+
+T85 gave `PATCH /admin/users/:id/role` an interlock: the change is refused, under
+a row lock, if it would leave no administrator able to sign in (D100).
+`PATCH /admin/users/:id/status` has no equivalent, and it can produce the same
+outcome by a different column.
+
+`setStatus` refuses an administrator changing their **own** standing, so one
+request cannot lock the platform out. Two can, exactly as they could for the
+role: two administrators suspending each other at the same moment are two legal
+requests, each leaves an active administrator behind at the moment it is
+checked, and both commit. The platform is then left with administrators who all
+fail `UsersService.isActive`, and `JwtAuthGuard` refuses every one of them
+before their role is ever consulted.
+
+**Recovery is worse than the role case.** `create-admin.js` sets `role` and does
+not touch `status`, so it cannot reinstate a suspended administrator — the only
+way back is direct SQL against the database.
+
+**Not fixed in phase 14, deliberately.** T85's scope was role management, and
+`setStatus` is a working endpoint whose behaviour was not part of it. The fix is
+not a design question: it is the same three lines `updateRole` now carries — take
+`FOR UPDATE` on the active administrator rows, write, count, refuse at zero —
+and `ADMIN_LAST_ADMIN_PROTECTED` already exists to name the refusal.
+
+The one judgement it needs, which is why it is not a copy-paste: `updateRole`
+counts what a *demotion* leaves, and a suspension is reversible by any other
+administrator while a demotion is not. Whether banning the last administrator
+should be refused outright or merely warned about is the question to settle
+before writing it.
+
+**Trigger:** a second full-time operator — the same trigger T85 had, and the
+reason this is worth more than its "low" sibling.
 
 ---
 

@@ -6,6 +6,7 @@ import {
   type Balance,
   type ListUsersQuery,
   type Paginated,
+  type UserRole,
   type UserStatus,
 } from '@gemone/contracts';
 
@@ -174,6 +175,85 @@ export class AdminUsersService {
         to: updated.status,
       },
       'Admin changed user status',
+    );
+
+    const counts = await this.tokens.countActiveSessions([targetUserId]);
+    return UsersService.toAdminSummary(updated, counts.get(targetUserId) ?? 0);
+  }
+
+  /**
+   * Promotes or demotes an account — TODO T85.
+   *
+   * The other half of ARCHITECTURE.md §8.4's *"provisioned by a seed script or
+   * by an existing admin"*. `create-admin.js` had been the whole of it, which
+   * meant appointing a second operator required somebody with server access —
+   * and `ADMIN_ACTIONS.USER_ROLE_CHANGED` had been in the audit vocabulary
+   * since Feature 2 with nothing writing it.
+   *
+   * ## Self-action, refused for the same reason as a status change
+   *
+   * Not a new rule: `setStatus` already refuses `targetUserId === adminId`
+   * because an administrator locking themselves out of a single-admin
+   * deployment is unrecoverable without database access. Demotion is that same
+   * act by a different column — and it is *more* final, because a suspended
+   * administrator can be reinstated by another administrator while a demoted
+   * one cannot appoint themselves back.
+   *
+   * ## And no session revocation, deliberately
+   *
+   * `setStatus` revokes because a suspended account must stop being able to
+   * act at all. A demoted account keeps every right it had as a user; only the
+   * admin surface closes, and it closes on the very next request because
+   * `JwtAuthGuard` reads the role from the database rather than from the token
+   * (§8.3, §14.2). Signing the person out of their own account would be a
+   * second, unrelated consequence hidden inside this one.
+   */
+  async setRole(
+    targetUserId: string,
+    role: UserRole,
+    reason: string,
+    context: AdminActionContext,
+  ): Promise<AdminUserSummary> {
+    if (targetUserId === context.adminId) {
+      throw new DomainError(
+        ERROR_CODES.ADMIN_SELF_ACTION_FORBIDDEN,
+        'You cannot change your own role',
+        403,
+      );
+    }
+
+    const before = await this.users.requireById(targetUserId);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      /*
+       * One transaction, because the last-administrator interlock inside
+       * `updateRole` is a row lock — and a lock outside the transaction that
+       * writes the audit entry would be released before the entry exists.
+       */
+      const user = await this.users.updateRole(targetUserId, role, tx);
+
+      await this.audit.record(tx, {
+        adminId: context.adminId,
+        action: ADMIN_ACTIONS.USER_ROLE_CHANGED,
+        targetType: 'user',
+        targetId: targetUserId,
+        before: { role: before.role },
+        after: { role: user.role },
+        reason,
+        ip: context.ip ?? null,
+      });
+
+      return user;
+    });
+
+    this.logger.warn(
+      {
+        adminId: context.adminId,
+        targetUserId,
+        from: before.role,
+        to: updated.role,
+      },
+      'Admin changed user role',
     );
 
     const counts = await this.tokens.countActiveSessions([targetUserId]);

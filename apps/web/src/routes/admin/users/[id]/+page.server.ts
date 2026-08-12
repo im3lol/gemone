@@ -7,11 +7,12 @@ import type {
   Balance,
   Paginated,
   UserFraudSignals,
+  UserRole,
   UserStatus,
 } from '@gemone/contracts';
 
 import type { AccountActivity } from '$lib/components/admin';
-import { USER_STATUSES_IN_ORDER } from '$lib/admin/users';
+import { USER_ROLES_IN_ORDER, USER_STATUSES_IN_ORDER } from '$lib/admin/users';
 import { apiAuthed, apiAuthedJson, apiPath, readFailure, type ApiFailure } from '$lib/server/api';
 import { failedDetailLoad } from '$lib/server/detail';
 import { nowIso } from '$lib/time';
@@ -112,22 +113,23 @@ export const load: PageServerLoad = async (event) => {
 };
 
 /**
- * Two actions, because the API has two.
+ * Three actions, because the API has three.
  *
- * `PATCH /admin/users/:id/status` and `POST /admin/users/:id/revoke-sessions`,
- * both taking a mandatory reason of at least eight characters. Neither rule is
- * restated here: the minimum length, the closed set of statuses and the
- * refusal to let an admin change their own standing all live in the API, and
- * its message is what the operator reads.
+ * `PATCH /admin/users/:id/status`, `PATCH /admin/users/:id/role` and
+ * `POST /admin/users/:id/revoke-sessions`, all taking a mandatory reason of at
+ * least eight characters. No rule of theirs is restated here: the minimum
+ * length, the closed sets of statuses and roles, the refusal to let an
+ * administrator change their own standing or role, and the interlock that
+ * refuses any change leaving nobody able to administer the platform all live
+ * in the API — and its message is what the operator reads.
  *
- * **There is deliberately no role change.** `ADMIN_ACTIONS.USER_ROLE_CHANGED`
- * exists in the audit vocabulary and no endpoint writes it — promoting an
- * account is `create-admin.js`, by design (§8.4). A screen that offered it
- * would have to invent what it means. Recorded as TODO T85.
+ * The role change is what closed T85 (§8.4's *"or by an existing admin"*);
+ * until it existed, appointing a second operator meant somebody with server
+ * access running `create-admin.js`.
  */
 async function call(
   event: RequestEvent,
-  action: 'status' | 'revoke',
+  action: 'status' | 'revoke' | 'role',
   path: string,
   method: 'POST' | 'PATCH',
   body: unknown,
@@ -177,6 +179,11 @@ function readStatus(raw: string): UserStatus | null {
   return USER_STATUSES_IN_ORDER.includes(raw as UserStatus) ? (raw as UserStatus) : null;
 }
 
+/** The same, for the role — and for the same reason (T85). */
+function readRole(raw: string): UserRole | null {
+  return USER_ROLES_IN_ORDER.includes(raw as UserRole) ? (raw as UserRole) : null;
+}
+
 export const actions = {
   status: async (event) => {
     const form = await event.request.formData();
@@ -200,6 +207,30 @@ export const actions = {
     );
   },
 
+  role: async (event) => {
+    const form = await event.request.formData();
+    const role = readRole(field(form, 'role'));
+
+    if (!role) {
+      return fail(422, {
+        ok: false as const,
+        action: 'role' as const,
+        message: 'That is not a role this build knows about.',
+      });
+    }
+
+    return call(
+      event,
+      'role',
+      apiPath`/admin/users/${event.params.id}/role`,
+      'PATCH',
+      { role, reason: field(form, 'reason') },
+      role === 'ADMIN'
+        ? 'The account is now an administrator. The admin surface opens on their next request.'
+        : 'Administrator access is removed. The account, its sessions and its points are untouched.',
+    );
+  },
+
   revoke: async (event) => {
     const form = await event.request.formData();
 
@@ -214,4 +245,4 @@ export const actions = {
   },
 } satisfies Actions;
 
-export const __testing = { readStatus, reason, ACTIVITY_LIMIT };
+export const __testing = { readStatus, readRole, reason, ACTIVITY_LIMIT };
