@@ -1,8 +1,21 @@
-import { error, fail, redirect } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import type { AdminPayoutDetail, AdminPayoutSummary } from '@gemone/contracts';
 
-import { apiAuthed, apiAuthedJson, readFailure } from '$lib/server/api';
+import { apiAuthed, apiAuthedJson, apiPath, readFailure } from '$lib/server/api';
+import { failedDetailLoad } from '$lib/server/detail';
 import type { Actions, PageServerLoad, RequestEvent } from './$types';
+
+/**
+ * What a bad reference is told — TODO T86.
+ *
+ * Two sentences rather than one, because a reference that could never name a
+ * payout and one that names no payout lead somewhere different: the first is
+ * usually a mis-paste, the second usually a request that has been dealt with.
+ */
+const NOT_FOUND = {
+  malformed: 'That is not a payout reference. Check the value you pasted into the address bar.',
+  missing: 'No payout request has that reference.',
+};
 
 /**
  * One request, in full — ARCHITECTURE.md §11.3, DATABASE.md §3.5.
@@ -16,18 +29,31 @@ import type { Actions, PageServerLoad, RequestEvent } from './$types';
  *
  * It is awaited rather than streamed. It *is* the page, and there is nothing
  * to render around it.
+ *
+ * ## The identifier is encoded, and that is not a formality
+ *
+ * `apiPath` percent-encodes it. Interpolated raw, an id of `../users` resolved
+ * to `/admin/users` before the request left this process — so the page fetched
+ * the admin *user list*, got a 200, and crashed rendering it as a payout. A
+ * trailing space did the same thing to `/admin/payouts/`, the list endpoint.
+ * A value from the address bar was choosing which endpoint an authenticated
+ * admin request reached.
+ *
+ * ## And the failure keeps its meaning
+ *
+ * `failedDetailLoad` maps the API's answer instead of collapsing everything
+ * that is not a 404 into a 502 — which is what turned *"uuid is expected"*, a
+ * statement about the URL, into a bad-gateway page blaming the API.
  */
 export const load: PageServerLoad = async (event) => {
   const { params } = event;
 
-  const result = await apiAuthedJson<AdminPayoutDetail>(event, `/admin/payouts/${params.id}`);
+  const result = await apiAuthedJson<AdminPayoutDetail>(
+    event,
+    apiPath`/admin/payouts/${params.id}`,
+  );
 
-  if (!result.ok) {
-    if (result.failure.status === 401) redirect(303, '/login');
-    if (result.failure.status === 403) error(403, 'Admins only');
-
-    error(result.failure.status === 404 ? 404 : 502, result.failure.message);
-  }
+  if (!result.ok) failedDetailLoad(result.failure, NOT_FOUND);
 
   return { payout: result.value };
 };
@@ -52,7 +78,7 @@ async function transition(
   step: 'approve' | 'reject' | 'settle' | 'fail',
   body: unknown,
 ) {
-  const result = await apiAuthed(event, `/admin/payouts/${event.params.id}/${step}`, {
+  const result = await apiAuthed(event, apiPath`/admin/payouts/${event.params.id}/${step}`, {
     method: 'POST',
     body: JSON.stringify(body),
   });

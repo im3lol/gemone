@@ -11,6 +11,7 @@ import {
   IsDefined,
   IsEnum,
   IsInt,
+  IsISO8601,
   IsOptional,
   IsString,
   IsUUID,
@@ -18,6 +19,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 export class AdminListConfigurationDto implements AdminListConfigurationQuery {
@@ -46,6 +48,19 @@ export class AdminConfigurationDetailDto {
 }
 
 export class SetConfigurationDto implements SetConfigurationRequest {
+  /**
+   * The version this caller read — TODO T88.
+   *
+   * `ValidateIf` rather than `IsOptional`, because the three states differ and
+   * `IsOptional` treats `null` as absent: a caller asserting "nothing was
+   * stored" would then be writing unconditionally, which is the case the
+   * precondition most needs to catch. Present-and-null is validated as null;
+   * present-and-a-string is validated as a timestamp; absent is absent.
+   */
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @IsISO8601({ strict: true }, { message: 'must be the updatedAt of the value you read' })
+  expectedUpdatedAt?: string | null;
+
   /**
    * Untyped on the wire, validated on the way in by the key's own schema.
    *
@@ -82,6 +97,19 @@ export class SetConfigurationDto implements SetConfigurationRequest {
 }
 
 export class ResetConfigurationDto implements ResetConfigurationRequest {
+  /**
+   * The version this caller read — TODO T88.
+   *
+   * `ValidateIf` rather than `IsOptional`, because the three states differ and
+   * `IsOptional` treats `null` as absent: a caller asserting "nothing was
+   * stored" would then be writing unconditionally, which is the case the
+   * precondition most needs to catch. Present-and-null is validated as null;
+   * present-and-a-string is validated as a timestamp; absent is absent.
+   */
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @IsISO8601({ strict: true }, { message: 'must be the updatedAt of the value you read' })
+  expectedUpdatedAt?: string | null;
+
   @IsOptional()
   @IsEnum(CONFIG_SCOPES)
   scope?: ConfigScopeName;

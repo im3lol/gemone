@@ -7,7 +7,7 @@ import type {
 } from '@gemone/contracts';
 
 import type { ProviderResult } from '$lib/components/admin';
-import { apiAuthed, apiAuthedJson, readFailure, type ApiFailure } from '$lib/server/api';
+import { apiAuthed, apiAuthedJson, apiPath, readFailure, type ApiFailure } from '$lib/server/api';
 import { nowIso } from '$lib/time';
 import type { Actions, PageServerLoad, RequestEvent } from './$types';
 
@@ -152,7 +152,7 @@ export const actions = {
     return call(
       event,
       'enable',
-      `/admin/providers/${id}/enabled`,
+      apiPath`/admin/providers/${id}/enabled`,
       'PATCH',
       { enabled: true, reason: field(form, 'reason') },
       'The provider is enabled. Synchronize its catalog to fill the wall.',
@@ -166,7 +166,7 @@ export const actions = {
     return call(
       event,
       'disable',
-      `/admin/providers/${id}/enabled`,
+      apiPath`/admin/providers/${id}/enabled`,
       'PATCH',
       { enabled: false, reason: field(form, 'reason') },
       'The provider is disabled: not synced, excluded from the wall, and its postbacks rejected.',
@@ -189,7 +189,7 @@ export const actions = {
     return call(
       event,
       'sync',
-      `/admin/catalog/providers/${id}/sync`,
+      apiPath`/admin/catalog/providers/${id}/sync`,
       'POST',
       { mode },
       `A ${mode.toLowerCase()} synchronization was queued. Reload in a moment to see the result.`,

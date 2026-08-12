@@ -45,7 +45,7 @@ describe('cache invalidation happens after the commit', () => {
       })),
       storedValues: vi.fn(async () => []),
       history: vi.fn(async () => []),
-      overrideCounts: vi.fn(async () => new Map<string, number>()),
+      overrideCounts: vi.fn(async () => new Map<string, { stored: number; provider: number }>()),
     };
 
     const prisma = {
@@ -118,7 +118,7 @@ describe('cache invalidation happens after the commit', () => {
       })),
       storedValues: vi.fn(async () => []),
       history: vi.fn(async () => []),
-      overrideCounts: vi.fn(async () => new Map<string, number>()),
+      overrideCounts: vi.fn(async () => new Map<string, { stored: number; provider: number }>()),
     };
 
     const audit = { record: vi.fn(async (..._args: unknown[]) => undefined) };
@@ -169,7 +169,7 @@ describe('cache invalidation happens after the commit', () => {
       })),
       storedValues: vi.fn(async () => []),
       history: vi.fn(async () => []),
-      overrideCounts: vi.fn(async () => new Map<string, number>()),
+      overrideCounts: vi.fn(async () => new Map<string, { stored: number; provider: number }>()),
     };
 
     const audit = { record: vi.fn(async () => undefined) };

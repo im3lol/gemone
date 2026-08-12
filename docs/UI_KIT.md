@@ -972,6 +972,30 @@ The action returns the submitted value and reason on failure and the form
 prefers them over the stored ones. A settings form that clears itself makes an
 operator retype a JSON array to find out what was wrong with it the second time.
 
+### Editing one provider's value
+
+`?scopeId=<provider>` switches the form to that provider's override, chosen from
+a row of links rather than a select — the scope belongs in the URL, so "the hold
+period for this provider" is bookmarkable and the Back button leaves the scope.
+Only keys that declare `PROVIDER` show the picker; there is nothing to choose
+between otherwise.
+
+At provider scope the box holds **that provider's** stored value, falling back
+to what the provider resolves to. Showing the global value there would invite an
+operator to confirm a number that is not this provider's.
+
+### A stale write is its own state
+
+When somebody else changed the key first the API answers 409 and the form shows
+a warning with a **reload link**, not the error styling every other refusal
+gets. The recovery is different: nothing about what was typed is wrong, and the
+fix is to look at what is there now. What was typed is kept, because discarding
+an operator's work without asking is the other way to lose a change.
+
+The hidden `expectedUpdatedAt` is the version the page was **rendered** from,
+never re-derived at submit time — re-deriving it would compare the API against
+itself and agree every time.
+
 ### Two warnings, both read from the response
 
 A key with provider overrides warns that a global write will not reach those

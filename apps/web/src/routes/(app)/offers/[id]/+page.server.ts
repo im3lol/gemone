@@ -1,7 +1,7 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import type { ClickResponse, WallOffer } from '@gemone/contracts';
 
-import { apiAuthed, apiAuthedJson, readFailure } from '$lib/server/api';
+import { apiAuthed, apiAuthedJson, apiPath, readFailure } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 /**
@@ -19,7 +19,7 @@ import type { Actions, PageServerLoad } from './$types';
 export const load: PageServerLoad = async (event) => {
   const { params } = event;
 
-  const offer = await apiAuthedJson<WallOffer>(event, `/offers/${params.id}`);
+  const offer = await apiAuthedJson<WallOffer>(event, apiPath`/offers/${params.id}`);
 
   if (!offer.ok) {
     if (offer.failure.status === 401) redirect(303, `/login?next=/offers/${params.id}`);

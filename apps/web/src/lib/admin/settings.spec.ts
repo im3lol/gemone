@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   formatValue,
+  versionFor,
   groupByNamespace,
   isSettableAt,
   keyLabel,
@@ -10,6 +11,8 @@ import {
   shadowedBy,
   sourceState,
   toInputValue,
+  versionFromField,
+  versionToField,
 } from './settings';
 
 /**
@@ -167,5 +170,59 @@ describe('isSettableAt', () => {
     expect(isSettableAt(['GLOBAL'], 'GLOBAL')).toBe(true);
     expect(isSettableAt(['GLOBAL'], 'PROVIDER')).toBe(false);
     expect(isSettableAt(['GLOBAL', 'PROVIDER'], 'PROVIDER')).toBe(true);
+  });
+});
+
+/**
+ * The write precondition — TODO T88.
+ *
+ * These decide whether one administrator can silently overwrite another's
+ * change, which is the whole of what T88 is about.
+ */
+describe('versionFor', () => {
+  const detail = (overrides: { scope: string; scopeId: string; updatedAt: string }[]) =>
+    ({ overrides }) as never;
+
+  const GLOBAL_ROW = { scope: 'GLOBAL', scopeId: '', updatedAt: '2026-08-12T10:00:00.000Z' };
+  const PROVIDER_ROW = { scope: 'PROVIDER', scopeId: 'p1', updatedAt: '2026-08-12T11:00:00.000Z' };
+
+  it('reads the version of the stored global row', () => {
+    expect(versionFor(detail([GLOBAL_ROW]), '')).toBe(GLOBAL_ROW.updatedAt);
+  });
+
+  it('is null when nothing is stored at that scope', () => {
+    // Not an absence of opinion: "I read a key with nothing stored" is a real
+    // thing to have read, and the state a first write is made from.
+    expect(versionFor(detail([]), '')).toBe(null);
+    expect(versionFor(detail([GLOBAL_ROW]), 'p1')).toBe(null);
+  });
+
+  it('keeps the scopes apart, because they are different rows', () => {
+    /*
+     * A key can hold a global row and one per provider at once, each with its
+     * own `updatedAt`. Asserting a global version while writing a provider
+     * override would compare two different rows and pass whenever either had
+     * not moved.
+     */
+    const both = detail([GLOBAL_ROW, PROVIDER_ROW]);
+
+    expect(versionFor(both, '')).toBe(GLOBAL_ROW.updatedAt);
+    expect(versionFor(both, 'p1')).toBe(PROVIDER_ROW.updatedAt);
+    expect(versionFor(both, 'p2')).toBe(null);
+  });
+});
+
+describe('versionToField and versionFromField', () => {
+  it('round-trips a stored version through a hidden input', () => {
+    const version = '2026-08-12T10:00:00.000Z';
+
+    expect(versionFromField(versionToField(version))).toBe(version);
+  });
+
+  it('round-trips "nothing stored" as null, not as an empty string', () => {
+    // A hidden input can only hold a string, and the empty string is never a
+    // valid timestamp — so nothing legitimate collides with the sentinel.
+    expect(versionToField(null)).toBe('');
+    expect(versionFromField('')).toBe(null);
   });
 });

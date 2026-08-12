@@ -1,4 +1,4 @@
-import { error, fail, redirect } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import type {
   AdminConversionSummary,
   AdminPayoutSummary,
@@ -11,12 +11,19 @@ import type {
 
 import type { AccountActivity } from '$lib/components/admin';
 import { USER_STATUSES_IN_ORDER } from '$lib/admin/users';
-import { apiAuthed, apiAuthedJson, readFailure, type ApiFailure } from '$lib/server/api';
+import { apiAuthed, apiAuthedJson, apiPath, readFailure, type ApiFailure } from '$lib/server/api';
+import { failedDetailLoad } from '$lib/server/detail';
 import { nowIso } from '$lib/time';
 import type { Actions, PageServerLoad, RequestEvent } from './$types';
 
 /** Enough of each list to see a pattern. The dedicated screens hold the rest. */
 const ACTIVITY_LIMIT = 5;
+
+/** What a bad account id is told — TODO T86, and the same two sentences. */
+const NOT_FOUND = {
+  malformed: 'That is not an account id. Check the value you pasted into the address bar.',
+  missing: 'No account has that id.',
+};
 
 /**
  * One account, and what an administrator decides on — ARCHITECTURE.md §8.4.
@@ -50,37 +57,32 @@ const ACTIVITY_LIMIT = 5;
 export const load: PageServerLoad = async (event) => {
   const { params } = event;
 
+  /*
+   * Built with `URLSearchParams` rather than interpolated — TODO T86. An id
+   * containing `&` or `#` would otherwise add or truncate parameters on four of
+   * these five calls, and `apiPath` only guards the path.
+   */
+  const forAccount = (extra: Record<string, string>) =>
+    new URLSearchParams({ ...extra, limit: String(ACTIVITY_LIMIT) }).toString();
+
   const [account, payouts, conversions, signals, auditLog] = await Promise.all([
-    apiAuthedJson<AdminUserSummary>(event, `/admin/users/${params.id}`),
+    apiAuthedJson<AdminUserSummary>(event, apiPath`/admin/users/${params.id}`),
     apiAuthedJson<Paginated<AdminPayoutSummary>>(
       event,
-      `/admin/payouts?userId=${params.id}&limit=${ACTIVITY_LIMIT}`,
+      `/admin/payouts?${forAccount({ userId: params.id })}`,
     ),
     apiAuthedJson<Paginated<AdminConversionSummary>>(
       event,
-      `/admin/conversions?userId=${params.id}&limit=${ACTIVITY_LIMIT}`,
+      `/admin/conversions?${forAccount({ userId: params.id })}`,
     ),
-    apiAuthedJson<UserFraudSignals>(event, `/admin/fraud/users/${params.id}/signals`),
+    apiAuthedJson<UserFraudSignals>(event, apiPath`/admin/fraud/users/${params.id}/signals`),
     apiAuthedJson<Paginated<AuditLogEntry>>(
       event,
-      `/admin/audit-log?targetType=user&targetId=${params.id}&limit=${ACTIVITY_LIMIT}`,
+      `/admin/audit-log?${forAccount({ targetType: 'user', targetId: params.id })}`,
     ),
   ]);
 
-  if (!account.ok) {
-    if (account.failure.status === 401) redirect(303, '/login');
-    if (account.failure.status === 403) error(403, 'Admins only');
-
-    /*
-     * A 4xx from the API is a statement about the *request*, and the only
-     * thing wrong with the request is the id in the path — `/admin/users/
-     * not-a-uuid` is answered 422 by `createUuidPipe`. Reporting that as 502
-     * would blame the API for a URL somebody mistyped, and 502 is the page an
-     * operator escalates. Anything a malformed id can mean is "no such
-     * account".
-     */
-    error(account.failure.status < 500 ? 404 : 502, account.failure.message);
-  }
+  if (!account.ok) failedDetailLoad(account.failure, NOT_FOUND);
 
   const activity: AccountActivity = {
     payouts: payouts.ok ? payouts.value : null,
@@ -174,7 +176,7 @@ export const actions = {
     return call(
       event,
       'status',
-      `/admin/users/${event.params.id}/status`,
+      apiPath`/admin/users/${event.params.id}/status`,
       'PATCH',
       { status, reason: field(form, 'reason') },
       `The account is now ${status.toLowerCase()}. Any session it held has been ended.`,
@@ -187,7 +189,7 @@ export const actions = {
     return call(
       event,
       'revoke',
-      `/admin/users/${event.params.id}/revoke-sessions`,
+      apiPath`/admin/users/${event.params.id}/revoke-sessions`,
       'POST',
       { reason: field(form, 'reason') },
       'Every session was ended. The account can sign in again.',

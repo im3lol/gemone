@@ -17,8 +17,9 @@ import {
   ConfigurationService,
   GLOBAL_SCOPE_ID,
   type ConfigurationHistoryRecord,
+  type ConfigurationRowCounts,
 } from '../../core/config/configuration.service';
-import { PrismaService } from '../../core/database/prisma.service';
+import { PrismaService, type PrismaTransactionClient } from '../../core/database/prisma.service';
 import { DomainError, ValidationError } from '../../core/errors/app-error';
 import { ProvidersService } from '../providers/providers.service';
 import { AdminAuditService } from './admin-audit.service';
@@ -69,7 +70,10 @@ export class AdminConfigurationService {
     const definitions = this.configuration
       .definitionsList()
       .filter((definition) => matchesSearch(definition, query.search))
-      .filter((definition) => !query.overriddenOnly || (counts.get(definition.key) ?? 0) > 0)
+      // Anything stored at any scope: a key with only a provider override has
+      // been changed by somebody, and hiding it would answer "what has anybody
+      // changed" with a list that omits exactly that.
+      .filter((definition) => !query.overriddenOnly || (counts.get(definition.key)?.stored ?? 0) > 0)
       .sort((a, b) => a.key.localeCompare(b.key));
 
     const items = await Promise.all(
@@ -125,7 +129,13 @@ export class AdminConfigurationService {
   async set(
     key: string,
     value: unknown,
-    options: { scope?: ConfigScopeName; scopeId?: string; reason: string },
+    options: {
+      scope?: ConfigScopeName;
+      scopeId?: string;
+      reason: string;
+      /** See `assertNotStale`. Omitted means an unconditional write. */
+      expectedUpdatedAt?: string | null;
+    },
     context: AdminActionContext,
   ): Promise<AdminConfigurationKeyDetail> {
     /*
@@ -144,6 +154,10 @@ export class AdminConfigurationService {
     await this.assertScopeTargetExists(key, scope, options.scopeId);
 
     const written = await this.prisma.$transaction(async (tx) => {
+      // Before the write and inside its transaction, so the check and the
+      // write cannot be separated by another writer.
+      await this.assertNotStale(tx, key, scope, scopeIdFor(scope, options.scopeId), options.expectedUpdatedAt);
+
       const result = await this.configuration.set(
         key,
         value,
@@ -202,6 +216,74 @@ export class AdminConfigurationService {
   }
 
   /**
+   * Refuses a write whose caller read a different value — TODO T88.
+   *
+   * A configuration change alters economics with no deployment behind it, and
+   * `PUT`/`reset` are read-modify-write from a screen: an administrator loads a
+   * key, thinks, and submits. Another administrator can change the same key in
+   * between, and without this the second submission wins silently — the first
+   * change is gone, the timeline records both, and neither operator is told.
+   *
+   * ## The token is `updated_at`, which already existed
+   *
+   * `ConfigurationValue.updatedAt` is `@updatedAt`, so Postgres moves it on
+   * every write and `ConfigurationOverride.updatedAt` has always carried it to
+   * the client. No column was added and there is no version number to keep in
+   * step with the value it describes.
+   *
+   * ## `null` is a state, not "no opinion"
+   *
+   * "I read a key with nothing stored" is a real thing to have read, and the
+   * first write against a defaulted key is a decision (§4.9). Two
+   * administrators making it at once is exactly the case worth catching, so
+   * `null` asserts absence — while **omitting** the field asks for no check at
+   * all, which is what a seed script wants.
+   *
+   * ## Why the row is locked
+   *
+   * `SELECT … FOR UPDATE` inside the caller's transaction, which is the same
+   * mechanism `assertTransition` and `resolveHold` already use for "two admins
+   * in the same second". Without it this is a check-then-act: both writers read
+   * the same `updated_at`, both pass, and both upsert.
+   *
+   * The lock is held for the length of one write transaction, never across an
+   * operator's thinking time — the precondition is what covers that, and it is
+   * the optimistic half. When no row exists there is nothing to lock, so two
+   * first-writes are serialised by the unique index on
+   * `(key, scope_type, scope_id)` instead: one inserts, and the other finds a
+   * row where it asserted absence.
+   */
+  private async assertNotStale(
+    tx: PrismaTransactionClient,
+    key: string,
+    scope: ConfigScope,
+    scopeId: string,
+    expectedUpdatedAt: string | null | undefined,
+  ): Promise<void> {
+    if (expectedUpdatedAt === undefined) return;
+
+    const rows = await tx.$queryRaw<{ updated_at: Date }[]>`
+      SELECT updated_at FROM configuration_values
+       WHERE key = ${key}
+         AND scope_type = ${scope}::config_scope_type
+         AND scope_id = ${scopeId}
+       FOR UPDATE`;
+
+    const current = rows[0]?.updated_at?.toISOString() ?? null;
+
+    if (current === expectedUpdatedAt) return;
+
+    throw new DomainError(
+      ERROR_CODES.CONFIG_STALE_WRITE,
+      current === null
+        ? 'This setting was reset by someone else while you were editing it. Reload the page to see the value in force.'
+        : 'This setting was changed by someone else while you were editing it. Reload the page to see the value in force.',
+      409,
+      { key, scope, scopeId, expectedUpdatedAt: expectedUpdatedAt ?? null, currentUpdatedAt: current },
+    );
+  }
+
+  /**
    * Removes an explicit setting, returning the key to its resolution chain.
    *
    * A no-op when nothing was stored — and deliberately not an error, because
@@ -212,7 +294,13 @@ export class AdminConfigurationService {
    */
   async reset(
     key: string,
-    options: { scope?: ConfigScopeName; scopeId?: string; reason: string },
+    options: {
+      scope?: ConfigScopeName;
+      scopeId?: string;
+      reason: string;
+      /** See `assertNotStale`. Omitted means an unconditional reset. */
+      expectedUpdatedAt?: string | null;
+    },
     context: AdminActionContext,
   ): Promise<AdminConfigurationKeyDetail> {
     this.requireDefinition(key);
@@ -221,6 +309,8 @@ export class AdminConfigurationService {
     await this.assertScopeTargetExists(key, scope, options.scopeId);
 
     const written = await this.prisma.$transaction(async (tx) => {
+      await this.assertNotStale(tx, key, scope, scopeIdFor(scope, options.scopeId), options.expectedUpdatedAt);
+
       const result = await this.configuration.unset(
         key,
         {
@@ -352,7 +442,7 @@ export class AdminConfigurationService {
 
   private async toSummary(
     definition: ConfigurationKeyDefinition,
-    counts: Map<string, number>,
+    counts: Map<string, ConfigurationRowCounts>,
   ): Promise<AdminConfigurationKeySummary> {
     const effective = await this.configuration.resolve(definition.key);
 
@@ -364,7 +454,9 @@ export class AdminConfigurationService {
       defaultValue: definition.defaultValue,
       effectiveValue: effective.value,
       source: effective.source,
-      overrideCount: counts.get(definition.key) ?? 0,
+      // Provider rows only — the contract says "provider-scoped overrides",
+      // and the screen turns this into "N providers have their own value".
+      overrideCount: counts.get(definition.key)?.provider ?? 0,
     };
   }
 }
@@ -380,6 +472,20 @@ function matchesSearch(definition: ConfigurationKeyDefinition, search?: string):
     definition.key.toLowerCase().includes(needle) ||
     definition.description.toLowerCase().includes(needle)
   );
+}
+
+/**
+ * The scope id as the table stores it.
+ *
+ * GLOBAL rows use the empty-string sentinel rather than null, because in
+ * PostgreSQL two NULLs are never equal and a nullable column would let one key
+ * hold unlimited GLOBAL rows (see the schema comment on
+ * `ConfigurationValue.scopeId`). The precondition query has to match on the
+ * same value the write will, or it would look for a row that is there under a
+ * different key.
+ */
+function scopeIdFor(scope: ConfigScope, scopeId: string | undefined): string {
+  return scope === 'GLOBAL' ? GLOBAL_SCOPE_ID : (scopeId ?? '');
 }
 
 function auditTargetId(key: string, scope: ConfigScope, scopeId: string): string {

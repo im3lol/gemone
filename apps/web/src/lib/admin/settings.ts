@@ -1,5 +1,6 @@
-import { CONFIG_SOURCES } from '@gemone/contracts';
+import { CONFIG_SCOPES, CONFIG_SOURCES } from '@gemone/contracts';
 import type {
+  AdminConfigurationKeyDetail,
   AdminConfigurationKeySummary,
   ConfigScopeName,
   ConfigSource,
@@ -196,6 +197,53 @@ export function parseValue(raw: string, valueType: string): ParsedValue {
  */
 export function shadowedBy(summary: Pick<AdminConfigurationKeySummary, 'overrideCount'>): number {
   return summary.overrideCount;
+}
+
+/**
+ * The version of the row this screen is editing, as a write precondition —
+ * TODO T88, and scoped for T87.
+ *
+ * `null` is a value here, not an absence: it says "I read a key with nothing
+ * stored at this scope", which is a real thing to have read and the state a
+ * first write is made from. The API distinguishes it from *omitting* the
+ * precondition, which asks for no check at all.
+ *
+ * Read from `overrides` rather than from a field of its own, because that is
+ * where the stored row is: `effectiveValue` can come from the code default, and
+ * a default has no version to be stale against.
+ *
+ * Keyed by scope id, because a key can hold a global row and one row per
+ * provider **at once**, each with its own `updatedAt`. Asserting a global
+ * version while writing a provider override would compare two different rows
+ * and pass whenever either had not moved.
+ */
+export function versionFor(
+  setting: Pick<AdminConfigurationKeyDetail, 'overrides'>,
+  scopeId: string,
+): string | null {
+  const wanted = scopeId === '' ? CONFIG_SCOPES.GLOBAL : CONFIG_SCOPES.PROVIDER;
+
+  const row = setting.overrides.find(
+    (override) => override.scope === wanted && override.scopeId === scopeId,
+  );
+
+  return row?.updatedAt ?? null;
+}
+
+/**
+ * How the form carries that version through a `<form>`.
+ *
+ * A hidden input can only hold a string, so `null` travels as the empty string
+ * and comes back as `null`. The round trip is a pair so the two halves cannot
+ * drift: the empty string is never a valid timestamp, so nothing legitimate
+ * collides with it.
+ */
+export function versionToField(version: string | null): string {
+  return version ?? '';
+}
+
+export function versionFromField(raw: string): string | null {
+  return raw === '' ? null : raw;
 }
 
 /** Whether a key can be edited at the scope this screen writes to. */

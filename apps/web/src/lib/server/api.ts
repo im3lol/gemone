@@ -142,6 +142,51 @@ export async function establishSession(
 }
 
 /**
+ * Builds an API path with every interpolated value percent-encoded — TODO T86.
+ *
+ * ```ts
+ * apiPath`/admin/payouts/${params.id}`
+ * ```
+ *
+ * **This exists because a template literal let the caller choose the
+ * endpoint.** `/admin/payouts/${params.id}` with an id of `../users` becomes
+ * `/admin/payouts/../users`, and WHATWG URL parsing resolves that to
+ * `/admin/users` before the request leaves — so the BFF asked the admin user
+ * list for a payout, got a 200, and the page rendered a paginated list as if it
+ * were one request. It surfaced as
+ * `TypeError: Cannot read properties of undefined (reading 'replace')`, a 500
+ * from deep inside a component, with nothing naming the cause.
+ *
+ * A trailing space did the same thing more quietly: URL parsing strips it, so
+ * `/admin/payouts/%20` became `/admin/payouts/` — the *list* endpoint — and
+ * crashed identically.
+ *
+ * The interesting part is not the crash. It is that a value from the address
+ * bar decided which endpoint an authenticated admin request went to, which is
+ * the shape of a server-side request forgery even when, as here, every
+ * reachable target is one the same caller could already reach.
+ *
+ * ## Why a tag rather than `encodeURIComponent` at each call site
+ *
+ * Because the failure mode of the call-site version is forgetting it, and
+ * forgetting it is silent. This is the same reasoning `BffContext` records for
+ * threading the caller's address: *"threading a whole context costs one word
+ * per call site and removes the category."* A path built with this tag cannot
+ * have an unencoded segment in it, and a reviewer checking for the problem
+ * looks for the absence of the tag rather than reading every interpolation.
+ *
+ * Static parts are left alone, so `?` and `&` written **in the template** keep
+ * their meaning and a value interpolated next to them cannot take it.
+ */
+export function apiPath(strings: TemplateStringsArray, ...values: unknown[]): string {
+  return strings.reduce((path, part, index) => {
+    if (index === 0) return part;
+
+    return `${path}${encodeURIComponent(String(values[index - 1] ?? ''))}${part}`;
+  }, '');
+}
+
+/**
  * Calls the API on behalf of the session in the cookie, refreshing once if the
  * access token has expired.
  *

@@ -134,5 +134,18 @@ export type SettingsListResult =
  * JSON array to find out what was wrong with it the second time.
  */
 export type SettingActionResult =
-  | { ok: true; action: 'set' | 'reset'; message: string; value: string; reason: string }
-  | { ok: false; action: string; message: string; value: string; reason: string };
+  | { ok: true; action: 'set' | 'reset'; message: string; stale: false; value: string; reason: string }
+  | {
+      ok: false;
+      action: string;
+      message: string;
+      /**
+       * True when the write was refused because somebody else changed the key
+       * first — TODO T88. Separated from the message because the recovery
+       * differs: every other refusal is fixed by editing what was typed, this
+       * one by looking at what is there now.
+       */
+      stale: boolean;
+      value: string;
+      reason: string;
+    };

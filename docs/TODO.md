@@ -2117,7 +2117,7 @@ shell is a person waiting on somebody with server access.
 ---
 
 ### T86 — A malformed id on `/admin/payouts/[id]` reports 502
-**Status:** open · **Raised:** UI phase 11 · **Priority:** low
+**Status:** RESOLVED in UI phase 12 · **Raised:** UI phase 11 · **Priority:** low
 
 `error(result.failure.status === 404 ? 404 : 502, …)` turns the API's 422 for an
 unparseable UUID into a bad-gateway page, which blames the API for a URL
@@ -2128,10 +2128,31 @@ phase's scope.
 
 **Trigger:** touching that file for any reason.
 
+**Resolved in phase 12, and the 502 was the smaller half.** See D96. Reproducing
+it through the real route turned up two `500 Internal Error`s this entry had not
+noticed, and their cause was worse than a status mapping: the id was
+interpolated into the API path unencoded, so `/admin/payouts/${'..%2Fusers'}`
+resolved to `/admin/users` before the request left the process. The page fetched
+the admin *user list*, got a 200, and crashed rendering a paginated list as a
+payout. A trailing space did the same to `/admin/payouts/`, the list endpoint.
+A value from the address bar was choosing which endpoint an authenticated admin
+request reached.
+
+Fixed at the source with an `apiPath` tag that encodes every interpolated
+value, applied to every route that puts a caller-controlled value in a path —
+payouts, users, fraud, providers, offers and settings — and with query strings
+built by `URLSearchParams` where an id was being interpolated into one. The
+generic `/api/admin/[...path]` proxy already guarded `..` explicitly and needed
+no change.
+
+The status mapping is now `failedDetailLoad`, which keeps the four categories
+apart rather than collapsing them: 401 redirects, 403 stays 403, 404 and 422
+are both 404 with **different sentences**, and 5xx stays a server error.
+
 ---
 
 ### T87 — Settings can only be edited at GLOBAL scope
-**Status:** open · **Raised:** UI phase 11 (admin settings) · **Priority:** medium
+**Status:** RESOLVED in UI phase 12 · **Raised:** UI phase 11 (admin settings) · **Priority:** medium
 
 `PUT /admin/configuration/:key` accepts `scope: PROVIDER` with a `scopeId`, and
 eleven of the thirty-seven registered keys declare that scope. `/admin/settings/
@@ -2151,10 +2172,31 @@ surprising.
 share — which is the case P3's PROVIDER scope was designed for, so this is the
 most likely of these to come due.
 
+**Resolved in phase 12, because the backend already supported it safely.** See
+D98. The investigation this entry asked for found nothing missing: the scope a
+key may be set at is declared with the key and refused otherwise, a `scopeId` is
+required at PROVIDER scope and refused at GLOBAL, the provider must exist, the
+value is checked against the same schema whatever the scope, `reset` removes one
+scope's row, `GET …?scopeId=` resolves the chain for one provider, and the audit
+entry's target already carried the scope.
+
+So it is exposed rather than rebuilt: `?scopeId=<provider>` switches the detail
+screen to that provider's override, in the URL so the scope is a link and the
+Back button leaves it. The one thing that needed generalising was T88's
+precondition, which is keyed by `(key, scope, scope_id)` — a global version
+asserted against a provider row would compare two rows that move independently.
+
+**Found while building it.** `overrideCount` was the count of *every* stored row
+for a key, not of provider-scoped ones as the contract documents — so a key with
+a global value and one provider override told the operator that two providers
+had their own value. It surfaced the moment a screen rendered that sentence.
+`overrideCounts()` now returns both numbers, because the `overriddenOnly` filter
+legitimately wants the total.
+
 ---
 
 ### T88 — Concurrent configuration writes overwrite each other silently
-**Status:** open · **Raised:** UI phase 11 (admin settings) · **Priority:** low
+**Status:** RESOLVED in UI phase 12 · **Raised:** UI phase 11 (admin settings) · **Priority:** low
 
 `SetConfigurationDto` carries no version, etag or expected-current-value, so two
 administrators editing the same key in the same minute both succeed and the
@@ -2169,6 +2211,24 @@ Preventing it means a precondition on the write, which is an API change.
 
 **Trigger:** a second full-time operator, or the first time a configuration
 change is reverted by accident.
+
+**Resolved in phase 12 with the column that was already there.** See D97.
+`ConfigurationValue.updatedAt` is `@updatedAt` and
+`ConfigurationOverride.updatedAt` has always carried it to the client, so the
+precondition needed no schema change and no version number to keep in step with
+the value it describes.
+
+`expectedUpdatedAt` on `PUT` and on the reset endpoint has three states, and the
+third is the one a version number would miss: a timestamp asserts a row,
+**`null` asserts that nothing is stored** — the state a first write against a
+defaulted key is made from — and omitting the field asks for no check, which is
+what a seed script wants. A mismatch is `409 CONFIG_STALE_WRITE`.
+
+The check runs inside the write's own transaction under `SELECT … FOR UPDATE`,
+the same mechanism `assertTransition` and `resolveHold` already use for "two
+admins in the same second". Without it this is check-then-act and both writers
+pass. The lock is held for one write transaction, never across an operator's
+thinking time — the precondition is what covers that.
 
 ---
 

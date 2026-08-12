@@ -935,6 +935,508 @@ describe('admin configuration surface (integration)', () => {
     });
   });
 
+
+  // --- Concurrency ---------------------------------------------------------
+
+  /**
+   * Two administrators, one key — TODO T88.
+   *
+   * A configuration change alters economics with no deployment behind it, and
+   * the screen is read-modify-write: load a key, think, submit. Without a
+   * precondition the later submission wins and neither operator is told.
+   *
+   * The token is the stored row's `updatedAt`, which the detail response has
+   * always carried. These tests use it exactly as the screen does.
+   */
+  describe('concurrent writes', () => {
+    const KEY = REWARDS_HOLD_PERIOD_DAYS.key;
+
+    /** The `updatedAt` of the GLOBAL row, or null when nothing is stored. */
+    async function versionOf(caller: Caller, key: string): Promise<string | null> {
+      const response = await get(caller, `/admin/configuration/${key}`).expect(200);
+      const global = (response.body.overrides as { scope: string; updatedAt: string }[]).find(
+        (row) => row.scope === CONFIG_SCOPES.GLOBAL,
+      );
+
+      return global?.updatedAt ?? null;
+    }
+
+    it('accepts a write from someone who read the current value', async () => {
+      const admin = await createAdmin();
+
+      // Nothing stored yet, so the version an operator read is "absent".
+      expect(await versionOf(admin, KEY)).toBeNull();
+
+      await set(admin, KEY, { value: 21, reason: 'first write against a default', expectedUpdatedAt: null })
+        .expect(200);
+
+      const after = await versionOf(admin, KEY);
+      expect(after).not.toBeNull();
+
+      await set(admin, KEY, { value: 30, reason: 'second write, from the current value', expectedUpdatedAt: after })
+        .expect(200);
+
+      await expect(configuration.get(KEY)).resolves.toBe(30);
+    });
+
+    it('refuses a write from someone who read an older value', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'the value A read', expectedUpdatedAt: null }).expect(200);
+      const readByA = await versionOf(admin, KEY);
+
+      // B changes it while A is thinking.
+      await set(admin, KEY, { value: 45, reason: 'B changes it meanwhile', expectedUpdatedAt: readByA })
+        .expect(200);
+
+      const stale = await set(admin, KEY, {
+        value: 30,
+        reason: 'A submits the value they loaded',
+        expectedUpdatedAt: readByA,
+      }).expect(409);
+
+      expect(stale.body.error.code).toBe(ERROR_CODES.CONFIG_STALE_WRITE);
+      expect(stale.body.error.message).toMatch(/changed by someone else/i);
+
+      // B's value survives. That is the whole point.
+      await expect(configuration.get(KEY)).resolves.toBe(45);
+    });
+
+    it('refuses a first write when somebody else got there first', async () => {
+      const admin = await createAdmin();
+
+      // Both operators loaded a key with nothing stored.
+      await set(admin, KEY, { value: 21, reason: 'the other operator, first', expectedUpdatedAt: null })
+        .expect(200);
+
+      const stale = await set(admin, KEY, {
+        value: 30,
+        reason: 'still believes nothing is stored',
+        expectedUpdatedAt: null,
+      }).expect(409);
+
+      expect(stale.body.error.code).toBe(ERROR_CODES.CONFIG_STALE_WRITE);
+      await expect(configuration.get(KEY)).resolves.toBe(21);
+    });
+
+    it('lets exactly one of two simultaneous writes win', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'the value both operators read', expectedUpdatedAt: null })
+        .expect(200);
+      const shared = await versionOf(admin, KEY);
+
+      /*
+       * Sent together, not one after the other. Without the row lock inside
+       * the write transaction both would read the same `updated_at`, both
+       * would pass the check, and both would upsert — which is the race the
+       * precondition alone cannot close.
+       */
+      const [first, second] = await Promise.all([
+        set(admin, KEY, { value: 30, reason: 'operator one, at the same moment', expectedUpdatedAt: shared }),
+        set(admin, KEY, { value: 60, reason: 'operator two, at the same moment', expectedUpdatedAt: shared }),
+      ]);
+
+      const statuses = [first.status, second.status].sort();
+      expect(statuses).toEqual([200, 409]);
+
+      const winner = first.status === 200 ? 30 : 60;
+      await expect(configuration.get(KEY)).resolves.toBe(winner);
+
+      // And the loser changed nothing at all.
+      const history = await prisma.configurationHistory.findMany({ where: { key: KEY } });
+      expect(history).toHaveLength(2);
+    });
+
+    it('still checks the value, and a stale write of an invalid value is refused for being stale', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'the stored value', expectedUpdatedAt: null }).expect(200);
+      const version = await versionOf(admin, KEY);
+      await set(admin, KEY, { value: 45, reason: 'moved on', expectedUpdatedAt: version }).expect(200);
+
+      // The precondition runs before the write; the schema still guards the
+      // value on any write that gets past it.
+      await set(admin, KEY, { value: 9999, reason: 'stale and out of range', expectedUpdatedAt: version })
+        .expect(409);
+      await set(admin, KEY, {
+        value: 9999,
+        reason: 'current but out of range',
+        expectedUpdatedAt: await versionOf(admin, KEY),
+      }).expect(422);
+
+      await expect(configuration.get(KEY)).resolves.toBe(45);
+    });
+
+    it('succeeds on retry once the operator reloads', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'the value A read', expectedUpdatedAt: null }).expect(200);
+      const readByA = await versionOf(admin, KEY);
+      await set(admin, KEY, { value: 45, reason: 'B changes it', expectedUpdatedAt: readByA }).expect(200);
+
+      await set(admin, KEY, { value: 30, reason: 'A, stale', expectedUpdatedAt: readByA }).expect(409);
+
+      // Reload, then submit the same intention against what is actually there.
+      const reloaded = await versionOf(admin, KEY);
+      await set(admin, KEY, { value: 30, reason: 'A, after reloading', expectedUpdatedAt: reloaded }).expect(200);
+
+      await expect(configuration.get(KEY)).resolves.toBe(30);
+    });
+
+    it('guards a reset with the same precondition', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'a value to remove', expectedUpdatedAt: null }).expect(200);
+      const readByA = await versionOf(admin, KEY);
+      await set(admin, KEY, { value: 45, reason: 'B changes it first', expectedUpdatedAt: readByA }).expect(200);
+
+      await reset(admin, KEY, { reason: 'A resets what they loaded', expectedUpdatedAt: readByA }).expect(409);
+      await expect(configuration.get(KEY)).resolves.toBe(45);
+
+      await reset(admin, KEY, { reason: 'A resets after reloading', expectedUpdatedAt: await versionOf(admin, KEY) })
+        .expect(200);
+      await expect(configuration.get(KEY)).resolves.toBe(REWARDS_HOLD_PERIOD_DAYS.defaultValue);
+    });
+
+    it('writes unconditionally when the field is omitted', async () => {
+      const admin = await createAdmin();
+
+      /*
+       * A seed script has read nothing and has nothing to assert. Omitting the
+       * field is that, and it is deliberately distinct from sending `null`,
+       * which asserts that nothing is stored.
+       */
+      await set(admin, KEY, { value: 21, reason: 'a caller with no precondition' }).expect(200);
+      await set(admin, KEY, { value: 30, reason: 'and again, still unconditional' }).expect(200);
+
+      await expect(configuration.get(KEY)).resolves.toBe(30);
+    });
+
+    it('refuses a precondition that is not a timestamp', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, {
+        value: 21,
+        reason: 'a malformed precondition',
+        expectedUpdatedAt: 'yesterday',
+      }).expect(422);
+    });
+
+    it('leaves the audit trail intact for the write that won', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'the write that landed', expectedUpdatedAt: null })
+        .expect(200);
+      await set(admin, KEY, { value: 30, reason: 'a stale write that did not', expectedUpdatedAt: null })
+        .expect(409);
+
+      const entries = await prisma.adminAuditLog.findMany({
+        where: { action: ADMIN_ACTIONS.CONFIGURATION_CHANGED },
+      });
+
+      // One entry, for one change. A refused write is not a change, and an
+      // audit trail that recorded it would describe something that never
+      // happened.
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.reason).toBe('the write that landed');
+    });
+  });
+
+
+  /**
+   * Editing one provider's override — TODO T87.
+   *
+   * The scope chain and its guards have been tested since Feature 4; what these
+   * add is the combination the screen actually performs — write, resolve, reset
+   * and the staleness precondition, all at PROVIDER scope — because the
+   * precondition is keyed by `(key, scope, scope_id)` and a version that
+   * ignored the scope would compare two different rows.
+   */
+  describe('provider-scoped editing', () => {
+    const KEY = REWARDS_HOLD_PERIOD_DAYS.key;
+
+    async function versionOf(caller: Caller, key: string, scopeId: string): Promise<string | null> {
+      const path = scopeId
+        ? `/admin/configuration/${key}?scopeId=${scopeId}`
+        : `/admin/configuration/${key}`;
+      const response = await get(caller, path).expect(200);
+      const row = (response.body.overrides as { scopeId: string; updatedAt: string }[]).find(
+        (override) => override.scopeId === scopeId,
+      );
+
+      return row?.updatedAt ?? null;
+    }
+
+    it('stores a value for one provider without touching the global one', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'the platform-wide value', expectedUpdatedAt: null })
+        .expect(200);
+      await set(admin, KEY, {
+        value: 3,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'this network settles faster',
+        expectedUpdatedAt: null,
+      }).expect(200);
+
+      await expect(configuration.get(KEY)).resolves.toBe(21);
+      await expect(configuration.get(KEY, providerId)).resolves.toBe(3);
+    });
+
+    it('reports what that provider resolves to, and where it came from', async () => {
+      const admin = await createAdmin();
+
+      const beforeAny = await get(admin, `/admin/configuration/${KEY}?scopeId=${providerId}`)
+        .expect(200);
+      expect(beforeAny.body.resolvedForScope).toMatchObject({
+        value: REWARDS_HOLD_PERIOD_DAYS.defaultValue,
+        source: CONFIG_SOURCES.DEFAULT,
+      });
+
+      await set(admin, KEY, { value: 21, reason: 'a global value', expectedUpdatedAt: null }).expect(200);
+      const withGlobal = await get(admin, `/admin/configuration/${KEY}?scopeId=${providerId}`).expect(200);
+      expect(withGlobal.body.resolvedForScope).toMatchObject({
+        value: 21,
+        source: CONFIG_SOURCES.GLOBAL,
+      });
+
+      await set(admin, KEY, {
+        value: 3,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'an override',
+        expectedUpdatedAt: null,
+      }).expect(200);
+      const withOverride = await get(admin, `/admin/configuration/${KEY}?scopeId=${providerId}`).expect(200);
+      expect(withOverride.body.resolvedForScope).toMatchObject({
+        value: 3,
+        source: CONFIG_SOURCES.PROVIDER,
+      });
+    });
+
+    it('validates a provider value against the same schema', async () => {
+      const admin = await createAdmin();
+
+      // One schema per key, whatever the scope. A provider is not a reason for
+      // a hold period of 9999 days to become acceptable.
+      await set(admin, KEY, {
+        value: 9999,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'out of the key’s own range',
+        expectedUpdatedAt: null,
+      }).expect(422);
+
+      await expect(configuration.get(KEY, providerId)).resolves.toBe(
+        REWARDS_HOLD_PERIOD_DAYS.defaultValue,
+      );
+    });
+
+    it('removes one provider’s override and leaves the global value standing', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'global', expectedUpdatedAt: null }).expect(200);
+      await set(admin, KEY, {
+        value: 3,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'override',
+        expectedUpdatedAt: null,
+      }).expect(200);
+
+      await reset(admin, KEY, {
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'back to the platform value',
+        expectedUpdatedAt: await versionOf(admin, KEY, providerId),
+      }).expect(200);
+
+      await expect(configuration.get(KEY, providerId)).resolves.toBe(21);
+      await expect(configuration.get(KEY)).resolves.toBe(21);
+    });
+
+    it('keeps the two scopes’ preconditions apart', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, { value: 21, reason: 'global', expectedUpdatedAt: null }).expect(200);
+      await set(admin, KEY, {
+        value: 3,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'override',
+        expectedUpdatedAt: null,
+      }).expect(200);
+
+      const globalVersion = await versionOf(admin, KEY, '');
+      const providerVersion = await versionOf(admin, KEY, providerId);
+      expect(globalVersion).not.toBe(providerVersion);
+
+      /*
+       * The rows move independently, so a version from one is stale against the
+       * other. A precondition that ignored the scope would pass here, and the
+       * write would land on a row the operator never read.
+       */
+      await set(admin, KEY, {
+        value: 5,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'asserting the global version by mistake',
+        expectedUpdatedAt: globalVersion,
+      }).expect(409);
+
+      await set(admin, KEY, {
+        value: 5,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'asserting this provider’s own version',
+        expectedUpdatedAt: providerVersion,
+      }).expect(200);
+
+      // And the global row is untouched by all of it.
+      await expect(configuration.get(KEY)).resolves.toBe(21);
+      await expect(configuration.get(KEY, providerId)).resolves.toBe(5);
+    });
+
+    it('refuses a stale provider write, and records nothing for it', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, {
+        value: 3,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'the value A read',
+        expectedUpdatedAt: null,
+      }).expect(200);
+      const readByA = await versionOf(admin, KEY, providerId);
+
+      await set(admin, KEY, {
+        value: 7,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'B changes it meanwhile',
+        expectedUpdatedAt: readByA,
+      }).expect(200);
+
+      const stale = await set(admin, KEY, {
+        value: 5,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'A submits what they loaded',
+        expectedUpdatedAt: readByA,
+      }).expect(409);
+
+      expect(stale.body.error.code).toBe(ERROR_CODES.CONFIG_STALE_WRITE);
+      await expect(configuration.get(KEY, providerId)).resolves.toBe(7);
+    });
+
+    it('counts provider overrides, not every stored row', async () => {
+      const admin = await createAdmin();
+
+      /*
+       * `overrideCount` is documented as "how many provider-scoped overrides
+       * exist", and the settings screen turns it into "N providers have their
+       * own value". It was the total of every row for the key, so a global
+       * value plus one provider override reported two providers — visible the
+       * moment the screen started rendering that sentence.
+       *
+       * The `overriddenOnly` filter still asks a different question — has
+       * anybody stored anything — and still counts both.
+       */
+      await set(admin, KEY, { value: 21, reason: 'a global value', expectedUpdatedAt: null }).expect(200);
+
+      const globalOnly = await get(admin, `/admin/configuration?search=${KEY}`).expect(200);
+      expect(globalOnly.body.items[0]).toMatchObject({ key: KEY, overrideCount: 0 });
+
+      await set(admin, KEY, {
+        value: 3,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'one provider override',
+        expectedUpdatedAt: null,
+      }).expect(200);
+
+      const withOverride = await get(admin, `/admin/configuration?search=${KEY}`).expect(200);
+      expect(withOverride.body.items[0]).toMatchObject({ key: KEY, overrideCount: 1 });
+
+      const detail = await get(admin, `/admin/configuration/${KEY}`).expect(200);
+      expect(detail.body.overrideCount).toBe(1);
+      // Both rows are still listed; only the count changed meaning.
+      expect(detail.body.overrides).toHaveLength(2);
+    });
+
+    it('still lists a key whose only stored value is a provider override', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, {
+        value: 3,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'nothing global, one override',
+        expectedUpdatedAt: null,
+      }).expect(200);
+
+      // "What has anybody changed" must include it: somebody changed it.
+      const filtered = await get(admin, '/admin/configuration?overriddenOnly=true').expect(200);
+      expect((filtered.body.items as { key: string }[]).map((i) => i.key)).toContain(KEY);
+    });
+
+    it('audits a provider change against the provider, not the key alone', async () => {
+      const admin = await createAdmin();
+
+      await set(admin, KEY, {
+        value: 3,
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'auditable per provider',
+        expectedUpdatedAt: null,
+      }).expect(200);
+
+      const entries = await prisma.adminAuditLog.findMany({
+        where: { action: ADMIN_ACTIONS.CONFIGURATION_CHANGED },
+      });
+
+      // "Who changed the hold period *for this provider*" is the question, and
+      // a target of the key alone could not answer it.
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.targetId).toContain(providerId);
+    });
+
+    it('refuses a provider override on a key that does not declare the scope', async () => {
+      const admin = await createAdmin();
+
+      // Global-only by declaration. A key meaningless per provider must not be
+      // settable per provider, or the chain returns a value nobody intended.
+      await set(admin, PAYOUTS_ENABLED_METHODS.key, {
+        value: ['paypal'],
+        scope: CONFIG_SCOPES.PROVIDER,
+        scopeId: providerId,
+        reason: 'not a per-provider key',
+        expectedUpdatedAt: null,
+      }).expect(422);
+    });
+
+    it('refuses a provider override from someone who is not an admin', async () => {
+      const user = await createUser();
+
+      await request(server())
+        .put(`/admin/configuration/${KEY}`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({
+          value: 3,
+          scope: CONFIG_SCOPES.PROVIDER,
+          scopeId: providerId,
+          reason: 'not an admin at all',
+        })
+        .expect(403);
+
+      await expect(configuration.get(KEY, providerId)).resolves.toBe(
+        REWARDS_HOLD_PERIOD_DAYS.defaultValue,
+      );
+    });
+  });
+
   // --- Helpers -------------------------------------------------------------
 
   const server = () => app.getHttpServer();
@@ -973,7 +1475,13 @@ describe('admin configuration surface (integration)', () => {
   function set(
     caller: Caller,
     key: string,
-    body: { value: unknown; scope?: string; scopeId?: string; reason: string },
+    body: {
+      value: unknown;
+      scope?: string;
+      scopeId?: string;
+      reason: string;
+      expectedUpdatedAt?: string | null;
+    },
   ) {
     return request(server())
       .put(`/admin/configuration/${key}`)
@@ -984,7 +1492,7 @@ describe('admin configuration surface (integration)', () => {
   function reset(
     caller: Caller,
     key: string,
-    body: { scope?: string; scopeId?: string; reason: string },
+    body: { scope?: string; scopeId?: string; reason: string; expectedUpdatedAt?: string | null },
   ) {
     return request(server())
       .post(`/admin/configuration/${key}/reset`)

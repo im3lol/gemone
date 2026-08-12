@@ -110,7 +110,36 @@ export interface AdminConfigurationKeyDetail extends AdminConfigurationKeySummar
   } | null;
 }
 
-export interface SetConfigurationRequest {
+/**
+ * The precondition a configuration write may carry — TODO T88.
+ *
+ * `PUT` and the reset endpoint are read-modify-write from a screen: an
+ * administrator loads a key, thinks, and submits. Between those two moments
+ * another administrator can change the same key, and without a precondition the
+ * second submission wins with nothing said to either of them.
+ *
+ * The token is the stored row's `updatedAt`, which
+ * `ConfigurationOverride.updatedAt` has always carried — no new column, and
+ * nothing to keep in step with the value it describes.
+ *
+ * Three states, and the third is the one a version number would miss:
+ *
+ * - **A timestamp** — "I read the row that was written at this instant."
+ * - **`null`** — "I read a key with *nothing* stored at this scope." The first
+ *   write against a defaulted key is a decision, and two administrators making
+ *   it at once is exactly the case worth catching.
+ * - **omitted** — no precondition. An unconditional write, for a caller that
+ *   has not read anything, such as a seed script.
+ */
+export interface ConfigurationPrecondition {
+  /**
+   * The `updatedAt` of the row this caller read, or `null` for "nothing was
+   * stored". Omit the field entirely to write unconditionally.
+   */
+  expectedUpdatedAt?: string | null;
+}
+
+export interface SetConfigurationRequest extends ConfigurationPrecondition {
   /**
    * The new value, validated against the key's registered schema before it is
    * stored. Untyped here on purpose: the schema lives with the key that owns
@@ -132,7 +161,7 @@ export interface SetConfigurationRequest {
   reason: string;
 }
 
-export interface ResetConfigurationRequest {
+export interface ResetConfigurationRequest extends ConfigurationPrecondition {
   scope?: ConfigScopeName;
   scopeId?: string;
   reason: string;

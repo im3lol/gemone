@@ -948,5 +948,28 @@ from the developer's database — three admin accounts in this phase alone. The
 suite now derives its own `_test` database, creates and migrates it, and refuses
 to run against anything not named that way (D95).
 
+Phase 12 closes the three debts phase 11 left, and the first of them turned out
+to be larger than it was filed as.
+
+**T86** was recorded as a 502 for a mistyped payout reference. Reproducing it
+through the real route found two `500`s as well, whose cause was that the id was
+interpolated into the API path unencoded — so `..%2Fusers` fetched the admin
+*user list* into the payout page and crashed rendering it. Fixed with an
+`apiPath` tag applied to every route that puts a caller-controlled value in a
+path, and a `failedDetailLoad` that keeps invalid / missing / forbidden /
+upstream apart instead of collapsing them (D96).
+
+**T88** gives configuration writes a precondition, using the `updatedAt` the
+contract already carried. `null` means "I read a key with nothing stored", which
+is distinct from omitting the field — and the check runs under a row lock inside
+the write's own transaction, because otherwise both writers pass it (D97).
+
+**T87** is implemented rather than deferred: the investigation found every guard
+a per-provider editor needs already present and already tested, so the screen
+exposes `?scopeId=<provider>` and adds nothing to the API (D98). It surfaced a
+miscount — `overrideCount` had been every stored row rather than the
+provider-scoped ones the contract documents, so one override plus a global value
+read as "2 providers".
+
 Departures from what this audit and DESIGN_SYSTEM.md record are deliberate and
-are logged as [DECISIONS.md](DECISIONS.md) D79–D95.
+are logged as [DECISIONS.md](DECISIONS.md) D79–D98.

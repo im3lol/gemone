@@ -90,7 +90,12 @@ export class AdminConfigurationController {
     return this.configuration.set(
       key,
       body.value,
-      { scope: body.scope, scopeId: body.scopeId, reason: body.reason },
+      {
+        scope: body.scope,
+        scopeId: body.scopeId,
+        reason: body.reason,
+        expectedUpdatedAt: body.expectedUpdatedAt,
+      },
       { adminId: admin.id, ip: request.ip ?? null },
     );
   }
@@ -113,7 +118,12 @@ export class AdminConfigurationController {
   ): Promise<AdminConfigurationKeyDetail> {
     return this.configuration.reset(
       key,
-      { scope: body.scope, scopeId: body.scopeId, reason: body.reason },
+      {
+        scope: body.scope,
+        scopeId: body.scopeId,
+        reason: body.reason,
+        expectedUpdatedAt: body.expectedUpdatedAt,
+      },
       { adminId: admin.id, ip: request.ip ?? null },
     );
   }

@@ -3,7 +3,7 @@ import { FRAUD_REVIEW_DECISIONS } from '@gemone/contracts';
 import type { AdminHeldConversionSummary, Paginated } from '@gemone/contracts';
 
 import type { HeldQueueResult } from '$lib/components/admin';
-import { apiAuthed, apiAuthedJson, readFailure } from '$lib/server/api';
+import { apiAuthed, apiAuthedJson, apiPath, readFailure } from '$lib/server/api';
 import { nowIso } from '$lib/time';
 import type { Actions, PageServerLoad, RequestEvent } from './$types';
 
@@ -109,7 +109,7 @@ async function decide(event: RequestEvent, action: 'clear' | 'confirm') {
   const decision =
     action === 'clear' ? FRAUD_REVIEW_DECISIONS.CLEAR : FRAUD_REVIEW_DECISIONS.CONFIRM;
 
-  const result = await apiAuthed(event, `/admin/fraud/held/${conversionId}/review`, {
+  const result = await apiAuthed(event, apiPath`/admin/fraud/held/${conversionId}/review`, {
     method: 'POST',
     body: JSON.stringify({ decision, reason }),
   });

@@ -161,6 +161,15 @@ export const ERROR_CODES = {
   CONFIG_INVALID_VALUE: 'CONFIG_INVALID_VALUE',
   /** The key is not defined at the requested scope. */
   CONFIG_INVALID_SCOPE: 'CONFIG_INVALID_SCOPE',
+  /**
+   * The value moved between the read and the write — TODO T88.
+   *
+   * A configuration change alters economics with no deployment behind it, so
+   * two administrators editing one key must not silently overwrite each other.
+   * The caller states which version it read; a mismatch is refused rather than
+   * applied. 409, because the request was valid and the world moved.
+   */
+  CONFIG_STALE_WRITE: 'CONFIG_STALE_WRITE',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

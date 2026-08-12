@@ -43,6 +43,16 @@ export interface WrittenConfiguration {
   value: unknown;
 }
 
+/**
+ * How many rows exist for one key, split by the question being asked.
+ *
+ * `stored` includes the GLOBAL row; `provider` does not. See `overrideCounts`.
+ */
+export interface ConfigurationRowCounts {
+  stored: number;
+  provider: number;
+}
+
 export interface ConfigurationHistoryRecord {
   scope: ConfigScope;
   scopeId: string;
@@ -502,13 +512,38 @@ export class ConfigurationService implements OnModuleInit {
   }
 
   /** How many keys have something stored, by key. Powers the list screen. */
-  async overrideCounts(): Promise<Map<string, number>> {
+  async overrideCounts(): Promise<Map<string, ConfigurationRowCounts>> {
+    /*
+     * Two numbers, because two questions were being answered with one.
+     *
+     * "Has anybody stored anything for this key" — which is what the
+     * `overriddenOnly` filter asks — counts every row including the GLOBAL
+     * one. "How many providers have their own value" — which is what
+     * `AdminConfigurationKeySummary.overrideCount` documents, and what the
+     * settings screen warns about before a global write — counts only
+     * PROVIDER rows.
+     *
+     * They were the same total, so a key with a global value and one provider
+     * override told the operator that *two* providers had their own value.
+     * Found when the settings screen started rendering that sentence.
+     */
     const rows = await this.prisma.configurationValue.groupBy({
-      by: ['key'],
+      by: ['key', 'scopeType'],
       _count: { _all: true },
     });
 
-    return new Map(rows.map((row) => [row.key, row._count._all]));
+    const counts = new Map<string, ConfigurationRowCounts>();
+
+    for (const row of rows) {
+      const current = counts.get(row.key) ?? { stored: 0, provider: 0 };
+
+      current.stored += row._count._all;
+      if (row.scopeType === 'PROVIDER') current.provider += row._count._all;
+
+      counts.set(row.key, current);
+    }
+
+    return counts;
   }
 
   /**

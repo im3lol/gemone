@@ -2978,3 +2978,179 @@ protocol version, not a namespace (§14.3), and the message says only "forget
 your cached copy of key X" — each process re-reads from its own database, so the
 worst case is a redundant cache read. Turning a versioned protocol constant into
 an environment-derived one to prevent that would be the wrong trade.
+
+## D96 — A path parameter is encoded, and a failed detail load keeps its meaning
+
+**Context.** TODO T86 recorded that `/admin/payouts/[id]` answered a malformed
+reference with 502 — the API's *"Validation failed (uuid is expected)"*, a
+statement about the URL, rendered as a bad-gateway page blaming the API. 502 is
+also the page an operator escalates, so it was the wrong answer twice.
+
+**Reproducing it first found something bigger.** Six identifier shapes through
+the real route produced two `500 Internal Error`s the entry had not noticed, and
+their cause was not a status mapping. The id was interpolated into the API path
+unencoded:
+
+```ts
+apiAuthedJson(event, `/admin/payouts/${params.id}`)
+```
+
+With an id of `../users`, WHATWG URL parsing resolves that to `/admin/users`
+*before the request leaves the process*. The page fetched the admin user list,
+got a 200, and crashed inside a component rendering a paginated list as a
+payout — `TypeError: Cannot read properties of undefined (reading 'replace')`,
+with nothing in it naming the cause. A trailing space did the same thing more
+quietly: parsing strips it, so `/admin/payouts/%20` became `/admin/payouts/`,
+the list endpoint.
+
+The crash is not the interesting part. A value from the address bar was deciding
+which endpoint an authenticated admin request reached, which is the shape of a
+server-side request forgery even though, here, every reachable target is one the
+same caller could already reach.
+
+**Decision.** Fix it where it cannot recur, with a tagged template:
+
+```ts
+apiPath`/admin/payouts/${params.id}`
+```
+
+Every interpolated value is percent-encoded; static parts keep their meaning, so
+a `?` written in the template still starts a query string and one arriving in a
+value cannot. Applied to every route that puts a caller-controlled value in a
+path — payouts, users, fraud, providers, offers, settings — and query strings
+that were interpolating an id now go through `URLSearchParams`.
+
+**Why a tag rather than `encodeURIComponent` at each call site.** The failure
+mode of the call-site version is forgetting it, and forgetting it is silent.
+This is the reasoning `BffContext` already records for threading the caller's
+address: *"threading a whole context costs one word per call site and removes
+the category."* A reviewer now looks for the absence of the tag rather than
+reading every interpolation.
+
+**The generic proxy needed nothing.** `/api/admin/[...path]` already refuses a
+`..` segment outright, and its comment describes this exact normalisation. The
+mechanism was understood in the one file built to forward arbitrary paths, and
+unguarded in the six that build paths from a parameter.
+
+**The status mapping keeps four categories apart.** `failedDetailLoad` refuses
+the tempting `catch`-everything-into-404:
+
+- **401** redirects to the login form. The session ended; there is something to
+  do about it.
+- **403** stays 403. Telling a signed-in non-admin "not found" would say
+  something untrue about a resource that exists.
+- **404 and 422** are both 404 — a reference that cannot name a payout and one
+  that names no payout are the same fact to the reader — with **different
+  sentences**, because "check what you pasted" and "this request has been dealt
+  with" lead somewhere different.
+- **5xx** stays a server error, and a 503 from an unreachable API travels
+  through unchanged. A broken API disguised as a missing record is an outage
+  nobody sees until they wonder why every reference stopped resolving.
+
+422 can be read as "the identifier" only because these loads send no body and no
+query — the id is their only input. That reasoning does not hold for the actions
+on the same pages, which post a reason and a reference, and they still show the
+API's own message beside the form.
+
+## D97 — Configuration writes carry the version they were made from
+
+**Context.** TODO T88: `/admin/settings/[key]` is read-modify-write from a
+screen. An administrator loads a key, thinks, and submits; another can change
+the same key in between, and the second submission won with nothing said to
+either of them.
+
+**Decision.** An optimistic precondition on the write, using a column that
+already existed. `ConfigurationValue.updatedAt` is `@updatedAt`, and
+`ConfigurationOverride.updatedAt` has always carried it to the client — so there
+is no new column and no version number to keep in step with the value it
+describes.
+
+`expectedUpdatedAt` has **three** states, and the third is the one a plain
+version number would miss:
+
+- a timestamp — "I read the row written at this instant";
+- **`null`** — "I read a key with *nothing* stored at this scope", which is a
+  real thing to have read and the state a first write against a defaulted key is
+  made from;
+- **omitted** — no precondition at all, for a caller that has read nothing, such
+  as a seed script.
+
+The DTO uses `ValidateIf` rather than `IsOptional` precisely because
+`IsOptional` treats `null` as absent, which would turn the second case into the
+third — the case the precondition most needs to catch.
+
+A mismatch is `409 CONFIG_STALE_WRITE`, with a message naming what happened
+rather than what was wrong with the submission, because nothing was.
+
+**The check is inside the write's transaction, under a row lock.** This is
+otherwise check-then-act: both writers read the same `updated_at`, both pass,
+and both upsert. `SELECT … FOR UPDATE` is the same mechanism `assertTransition`
+and `resolveHold` already use for "two admins in the same second". The lock is
+held for one short write transaction and never across an operator's thinking
+time — the precondition is what covers that, and it is the optimistic half.
+
+When no row exists there is nothing to lock, and the unique index on
+`(key, scope_type, scope_id)` serialises the two first-writes instead: one
+inserts, and the other finds a row where it asserted absence. Proved by sending
+two writes with `Promise.all` and asserting the statuses are exactly `[200,
+409]` with one history row per successful write.
+
+**Rejected: making the field required.** It would have been a stronger
+guarantee and a breaking change to a public admin endpoint for the sake of
+callers that have nothing to assert. The screen always sends it; a script that
+does not is writing unconditionally on purpose.
+
+**The UI treats staleness as its own state, not an error variant.** Every other
+refusal is fixed by changing what was typed; this one is fixed by looking at
+what is there now. So it renders as a warning with a reload link, and what was
+typed is kept — discarding an operator's work without asking is the other way to
+lose a change. Matched on `CONFIG_STALE_WRITE` rather than on the 409 or on the
+message text.
+
+## D98 — Provider-scoped settings are exposed, because the backend already enforced them
+
+**Context.** TODO T87 recorded that `/admin/settings/[key]` wrote only at GLOBAL
+scope while eleven of thirty-seven keys declare `PROVIDER`. The instruction for
+this phase was explicit: expose it **only** if the existing API already supports
+it safely, and otherwise document the gap rather than invent a second
+configuration system.
+
+**The investigation found nothing missing.** Every guard a per-provider editor
+needs was already there and already tested: the scopes a key may be set at are
+declared with the key and anything else is refused; a `scopeId` is required at
+PROVIDER scope and refused at GLOBAL; the provider must exist; the value is
+checked against the **same** schema whatever the scope — a provider is not a
+reason for a 9999-day hold period to become acceptable; `reset` removes one
+scope's row; `GET …?scopeId=` resolves the chain for one provider; and the audit
+entry's target already carried the key *and* the scope, because "who changed the
+hold period for this provider" was always the question.
+
+**Decision.** Expose it, and add nothing to the API. `?scopeId=<provider>`
+switches the detail screen to that provider's override — in the URL rather than
+in a control's state, so the scope is a link, the Back button leaves it, and a
+reload cannot land an operator on a different scope from the one they were
+reading.
+
+**One thing genuinely needed generalising.** D97's precondition is keyed by
+`(key, scope, scope_id)`, and the screen was reading the *global* row's version.
+A key can hold a global row and one per provider at once, each moving
+independently, so asserting a global version while writing a provider override
+would compare two different rows and pass whenever either had not moved. The
+version helper is now scoped, and an integration test asserts the two are not
+interchangeable.
+
+**What the screen shows at provider scope.** The box holds that provider's
+stored value if it has one, and otherwise what that provider currently resolves
+to — the value being changed away from. Showing the global value in a provider's
+box would invite an operator to "confirm" a number that is not this provider's.
+The "In force" figure is labelled "In force for this provider" and comes from
+`resolvedForScope`, which the API computed by walking the chain rather than this
+page adding it up.
+
+**A bug this surfaced.** `overrideCount` was the count of *every* stored row for
+a key, not of provider-scoped ones as the contract documents — so a key with a
+global value and one provider override told the operator that **two** providers
+had their own value. It had been invisible until a screen rendered the sentence.
+`overrideCounts()` now returns both numbers, because the `overriddenOnly` filter
+asks a different question — "has anybody stored anything" — and legitimately
+wants the total.

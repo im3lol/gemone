@@ -25,7 +25,18 @@
   let { data, form } = $props();
 
   const setting = $derived(data.setting);
-  const source = $derived(sourceState(setting.source));
+
+  /*
+   * The badge describes the scope being viewed. On a provider's page that is
+   * where *that provider's* value comes from, which the API resolved through
+   * the chain — `setting.source` is the global answer and would say "Set
+   * globally" above a provider override.
+   */
+  const source = $derived(
+    sourceState(
+      data.scope === 'PROVIDER' ? (setting.resolvedForScope?.source ?? setting.source) : setting.source,
+    ),
+  );
 </script>
 
 <svelte:head><title>{setting.key} · GemOne admin</title></svelte:head>
@@ -51,9 +62,16 @@
 
   <dl class="grid grid-cols-2 gap-4 sm:grid-cols-3">
     <div>
-      <dt class="gm-caption">In force</dt>
+      <!--
+        At provider scope this is what *that provider* resolves to, which the
+        API computed by walking the chain (§4.9) rather than this page adding
+        it up. Labelled so the two are never mistaken for one another.
+      -->
+      <dt class="gm-caption">
+        {data.scope === 'PROVIDER' ? 'In force for this provider' : 'In force'}
+      </dt>
       <dd class="font-mono font-medium break-all text-text">
-        {formatValue(setting.effectiveValue)}
+        {formatValue(setting.resolvedForScope?.value ?? setting.effectiveValue)}
       </dd>
     </div>
     <div>
@@ -74,7 +92,13 @@
 
   <div class="grid gap-5 xl:grid-cols-2">
     <div class="min-w-0">
-      <SettingForm {setting} result={form ?? null} />
+      <SettingForm
+        {setting}
+        scope={data.scope}
+        scopeId={data.scopeId}
+        providers={data.providers}
+        result={form ?? null}
+      />
     </div>
 
     <div class="min-w-0">
